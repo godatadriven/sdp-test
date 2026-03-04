@@ -869,3 +869,184 @@ class TestLakeflowJaffleShop:
 
         result = run_case(spark, order_items[0])
         assert result.left_minus_right == 0 and result.right_minus_left == 0
+
+
+def _create_opensource_sdp_project(tmp_path: Path) -> Path:
+    """Scaffold a project using the open source Spark Declarative Pipelines format.
+
+    Uses spark-pipeline.yml (no databricks.yml bundle) with:
+    - Top-level pipeline definition (name, libraries, catalog, database, configuration)
+    - Library paths relative to the pipeline spec file
+    - SQL and Python models
+    """
+
+    # spark-pipeline.yml (open source SDP format)
+    (tmp_path / "spark-pipeline.yml").write_text(
+        """
+name: my_pipeline
+catalog: my_catalog
+database: my_db
+libraries:
+  - glob:
+      include: transformations/**
+configuration:
+  bronze_schema: oss_bronze
+  silver_schema: oss_silver
+  gold_schema: oss_gold
+"""
+    )
+
+    # SQL model
+    silver_dir = tmp_path / "transformations" / "silver"
+    silver_dir.mkdir(parents=True)
+
+    (silver_dir / "stg_customers.sql").write_text(
+        """
+CREATE OR REFRESH MATERIALIZED VIEW ${silver_schema}.stg_customers
+(
+    customer_id STRING,
+    full_name STRING
+)
+CLUSTER BY AUTO
+AS
+SELECT
+    CAST(id AS STRING) AS customer_id,
+    CONCAT(first_name, ' ', last_name) AS full_name
+FROM ${bronze_schema}.raw_customers;
+"""
+    )
+
+    (silver_dir / "stg_customers.unit_tests.yml").write_text(
+        """
+tests:
+  - name: concatenates_first_and_last_name
+    model: stg_customers.sql
+    given:
+      - table: ${bronze_schema}.raw_customers
+        rows:
+          - id: "1"
+            first_name: John
+            last_name: Doe
+          - id: "2"
+            first_name: Jane
+            last_name: Smith
+    expect:
+      rows:
+        - customer_id: "1"
+          full_name: John Doe
+        - customer_id: "2"
+          full_name: Jane Smith
+"""
+    )
+
+    # Python model
+    gold_dir = tmp_path / "transformations" / "gold"
+    gold_dir.mkdir(parents=True)
+
+    (gold_dir / "customer_count.py").write_text(
+        """
+from pyspark.sql import SparkSession, functions as F
+
+spark = SparkSession.getActiveSession() or SparkSession.builder.getOrCreate()
+SILVER_SCHEMA = spark.conf.get("silver_schema")
+
+def customer_count():
+    return (
+        spark.read.table(f"{SILVER_SCHEMA}.stg_customers")
+        .agg(F.count("*").alias("total_customers"))
+    )
+"""
+    )
+
+    (gold_dir / "customer_count.unit_tests.yml").write_text(
+        """
+tests:
+  - name: counts_customers
+    model: customer_count.py
+    given:
+      - table: ${silver_schema}.stg_customers
+        rows:
+          - customer_id: "1"
+            full_name: John Doe
+          - customer_id: "2"
+            full_name: Jane Smith
+          - customer_id: "3"
+            full_name: Bob Jones
+    expect:
+      rows:
+        - total_customers: 3
+"""
+    )
+
+    # Pipeline test spec (references spark-pipeline.yml directly, no bundle)
+    pipeline_tests = tmp_path / "pipeline_tests"
+    pipeline_tests.mkdir()
+
+    (pipeline_tests / "my_pipeline_tests.yml").write_text(
+        """
+suite: opensource_sdp_tests
+log_level: DEBUG
+
+pipeline:
+  file: ../spark-pipeline.yml
+"""
+    )
+
+    return tmp_path
+
+
+class TestOpenSourceSDP:
+    """Tests using the open source Spark Declarative Pipelines format (spark-pipeline.yml).
+
+    Validates that sdp-test works without a Databricks bundle, using the open source
+    pipeline spec format with top-level name, libraries, catalog, database, and
+    configuration fields.
+    """
+
+    def test_discovers_specs_from_spark_pipeline_yml(self, tmp_path: Path) -> None:
+        project = _create_opensource_sdp_project(tmp_path)
+        cases = all_cases(pipeline_tests_dir=project / "pipeline_tests")
+
+        assert len(cases) == 2
+        names = sorted(case.get("name", "unnamed") for _, case, _ in cases)
+        assert names == ["concatenates_first_and_last_name", "counts_customers"]
+
+    def test_resolves_configuration_as_defaults(self, tmp_path: Path) -> None:
+        project = _create_opensource_sdp_project(tmp_path)
+        cases = all_cases(pipeline_tests_dir=project / "pipeline_tests")
+
+        for _, case, _ in cases:
+            assert case.get("bronze_schema") == "oss_bronze"
+            assert case.get("silver_schema") == "oss_silver"
+            assert case.get("gold_schema") == "oss_gold"
+
+    def test_resolves_database_as_pipeline_schema(self, tmp_path: Path) -> None:
+        project = _create_opensource_sdp_project(tmp_path)
+        cases = all_cases(pipeline_tests_dir=project / "pipeline_tests")
+
+        for _, case, _ in cases:
+            assert case.get("pipeline_schema") == "my_db"
+            assert case.get("catalog") == "my_catalog"
+            assert case.get("pipeline_name") == "my_pipeline"
+
+    def test_sql_model_passes(self, spark, tmp_path: Path) -> None:
+        """Test SQL model in open source SDP project."""
+        project = _create_opensource_sdp_project(tmp_path)
+        cases = all_cases(pipeline_tests_dir=project / "pipeline_tests")
+
+        sql_case = [c for _, c, _ in cases if c.get("name") == "concatenates_first_and_last_name"]
+        assert len(sql_case) == 1
+
+        result = run_case(spark, sql_case[0])
+        assert result.left_minus_right == 0 and result.right_minus_left == 0
+
+    def test_python_model_passes(self, spark, tmp_path: Path) -> None:
+        """Test Python model in open source SDP project."""
+        project = _create_opensource_sdp_project(tmp_path)
+        cases = all_cases(pipeline_tests_dir=project / "pipeline_tests")
+
+        py_case = [c for _, c, _ in cases if c.get("name") == "counts_customers"]
+        assert len(py_case) == 1
+
+        result = run_case(spark, py_case[0])
+        assert result.left_minus_right == 0 and result.right_minus_left == 0

@@ -6,7 +6,6 @@ T = TypeVar("T")
 
 
 class _PipelinesShim:
-    """Local fallback when pyspark.pipelines is unavailable (for local tests/IDE)."""
 
     @staticmethod
     def table(*args: Any, **kwargs: Any) -> Callable[[T], T]:

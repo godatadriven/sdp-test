@@ -74,7 +74,16 @@ def all_cases(
         )
         bundle_target = bundle_cfg.get("target")
         bundle_vars = bundle_cfg.get("variables") or {}
-        context = load_bundle_context(str(bundle_path), target=bundle_target, variable_overrides=bundle_vars)
+        if bundle_path.exists():
+            context = load_bundle_context(str(bundle_path), target=bundle_target, variable_overrides=bundle_vars)
+        else:
+            # No bundle file — create a minimal context (open source SDP projects).
+            context: dict[str, Any] = {
+                "bundle": {"name": "default", "uuid": None, "target": "local"},
+                "var": bundle_vars,
+                "resources": {},
+                "workspace": {"file_path": str(pipeline_spec_file.parent.parent)},
+            }
         pipeline_defaults, pipeline_def = _load_pipeline_defaults(pipeline_spec_file, pipeline_spec_data, context)
         defaults = {**pipeline_defaults, **resolve_template(pipeline_spec_data.get("defaults") or {}, context)}
 
@@ -202,8 +211,8 @@ def _load_pipeline_defaults(
         else:
             pipeline_file = pipeline_cfg.get("file")
             key = pipeline_cfg.get("key")
-            if not pipeline_file or not key:
-                raise ValueError("Spec 'pipeline' requires either a string/ref form or both 'file' and 'key'")
+            if not pipeline_file:
+                raise ValueError("Spec 'pipeline' requires either a string/ref form, file+key, or file (open source)")
             pipeline_path = (
                 (spec_file.parent / pipeline_file).resolve()
                 if not Path(pipeline_file).is_absolute()
@@ -211,9 +220,17 @@ def _load_pipeline_defaults(
             )
             pipeline_data = yaml.safe_load(pipeline_path.read_text()) or {}
             pipeline_data = resolve_template(pipeline_data, context)
-            pipelines = (pipeline_data.get("resources") or {}).get("pipelines") or {}
-            pipeline_key = key
-            pipeline_data_origin = str(pipeline_path)
+
+            if key:
+                # Databricks bundle resource format: resources.pipelines.<key>
+                pipelines = (pipeline_data.get("resources") or {}).get("pipelines") or {}
+                pipeline_key = key
+                pipeline_data_origin = str(pipeline_path)
+            else:
+                # Open source spark-pipeline.yml format: pipeline definition at top level.
+                pipeline_def = pipeline_data
+                pipeline_def["__pipeline_spec_dir"] = str(pipeline_path.parent)
+                return _extract_pipeline_defaults(pipeline_def), pipeline_def
     else:
         raise ValueError("Spec 'pipeline' must be a string or object")
 
@@ -223,29 +240,46 @@ def _load_pipeline_defaults(
         raise ValueError(f"Could not find pipeline key '{pipeline_key}' in {pipeline_data_origin}")
 
     pipeline_def = pipelines[pipeline_key]
-    pipeline_configuration = pipeline_def.get("configuration") or {}
+    return _extract_pipeline_defaults(pipeline_def), pipeline_def
 
-    defaults = {
+
+def _extract_pipeline_defaults(pipeline_def: dict[str, Any]) -> dict[str, str]:
+    """Extract default substitutions from a pipeline definition.
+
+    Supports both Databricks bundle format and open source spark-pipeline.yml format.
+    In open source format, ``database`` is used as an alias for ``schema``.
+    """
+    pipeline_configuration = pipeline_def.get("configuration") or {}
+    schema = pipeline_def.get("schema") or pipeline_def.get("database")
+
+    return {
         **pipeline_configuration,
         "catalog": pipeline_def.get("catalog"),
-        "pipeline_schema": pipeline_def.get("schema"),
+        "pipeline_schema": schema,
         "pipeline_name": pipeline_def.get("name"),
     }
-    return defaults, pipeline_def
 
 
 def _discover_unit_spec_files(pipeline_def: dict[str, Any], context: dict[str, Any]) -> list[Path]:
     # Prefer bundle library globs as the single source of truth for pipeline code locations.
     library_roots: set[Path] = set()
     unit_files: set[Path] = set()
-    resources_dir = Path(str(context["workspace"]["file_path"])) / "resources"
+
+    # For open source spark-pipeline.yml, library paths are relative to the spec file.
+    # For Databricks bundles, library paths are relative to the resources/ directory.
+    pipeline_spec_dir = pipeline_def.get("__pipeline_spec_dir")
+    if pipeline_spec_dir:
+        base_dir = Path(pipeline_spec_dir)
+    else:
+        base_dir = Path(str(context["workspace"]["file_path"])) / "resources"
+
     libraries = pipeline_def.get("libraries") or []
 
     for library in libraries:
         file_entry = (library or {}).get("file")
         if file_entry:
             resolved_file = resolve_template(file_entry, context)
-            candidate_file = (resources_dir / str(resolved_file)).resolve()
+            candidate_file = (base_dir / str(resolved_file)).resolve()
             if candidate_file.is_dir():
                 library_roots.add(candidate_file)
             elif candidate_file.exists():
@@ -261,6 +295,16 @@ def _discover_unit_spec_files(pipeline_def: dict[str, Any], context: dict[str, A
                     if sibling_yaml.exists():
                         unit_files.add(sibling_yaml)
 
+        # Open source format: libraries can be a simple string path (e.g. "- transformations/**")
+        if isinstance(library, str):
+            resolved_lib = resolve_template(library, context)
+            base_pattern = str(resolved_lib).split("**", 1)[0].rstrip("/")
+            if base_pattern:
+                candidate = (base_dir / base_pattern).resolve()
+                if candidate.exists():
+                    library_roots.add(candidate)
+            continue
+
         glob_cfg = (library or {}).get("glob") or {}
         include_pattern = glob_cfg.get("include")
         if not include_pattern:
@@ -269,7 +313,7 @@ def _discover_unit_spec_files(pipeline_def: dict[str, Any], context: dict[str, A
         base_pattern = str(resolved_include).split("**", 1)[0].rstrip("/")
         if not base_pattern:
             continue
-        candidate = (resources_dir / base_pattern).resolve()
+        candidate = (base_dir / base_pattern).resolve()
         if candidate.exists():
             library_roots.add(candidate)
 

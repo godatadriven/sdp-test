@@ -52,21 +52,28 @@ class BundleSpec(BaseModel):
 
 
 class PipelineRefSpec(BaseModel):
-    """Alternative object syntax for pipeline selection."""
+    """Alternative object syntax for pipeline selection.
+
+    Supports three forms:
+    - ``ref: pipelines.<key>`` — reference a pipeline from bundle resources.
+    - ``file: <path>`` + ``key: <key>`` — reference a pipeline in a Databricks resource file.
+    - ``file: <path>`` (no key) — open source ``spark-pipeline.yml`` format where the
+      pipeline definition is at the top level of the file.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     ref: str | None = Field(default=None, description="Pipeline reference like pipelines.jaffle_shop_sql.")
-    file: str | None = Field(default=None, description="Optional resource file path.")
-    key: str | None = Field(default=None, description="Pipeline key in resource file.")
+    file: str | None = Field(default=None, description="Path to pipeline spec file (spark-pipeline.yml or resource).")
+    key: str | None = Field(default=None, description="Pipeline key in resource file (omit for open source format).")
 
     @model_validator(mode="after")
     def validate_shape(self) -> "PipelineRefSpec":
         if self.ref:
             return self
-        if self.file and self.key:
+        if self.file:
             return self
-        raise ValueError("Pipeline object must define either ref or file+key")
+        raise ValueError("Pipeline object must define either ref, file+key, or file (open source format)")
 
 
 class PipelineEntrySpec(BaseModel):
