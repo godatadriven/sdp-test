@@ -2,7 +2,7 @@
 
 from .bundle import load_bundle_context, load_pipeline_test_spec, resolve_template
 from .model_sql import register_df_as_view, render_model_query, rows_as_dicts
-from .pipelines_shim import dp
+from . import pipelines_shim
 from .spec_models import (
     BundleSpec,
     ExpectSpec,
@@ -32,7 +32,7 @@ __all__ = [
     "cases_from_pipeline_def",
     "cases_from_pipeline_file",
     "cases_from_spec",
-    "dp",
+    "pipelines_shim",
     "find_spec_files",
     "load_bundle_context",
     "load_pipeline_test_spec",

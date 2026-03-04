@@ -597,12 +597,22 @@ def _run_python_model(model_path: Path, case: dict[str, Any]):
     # Local pytest execution runs outside declarative pipeline context.
     # Temporarily shim dp decorators so Python model files can be imported and executed.
     saved_pipelines_module = sys.modules.get("pyspark.pipelines")
-    from .pipelines_shim import dp as shim_dp
+    from . import pipelines_shim
 
     shim_module = types.ModuleType("pyspark.pipelines")
-    setattr(shim_module, "table", shim_dp.table)
-    setattr(shim_module, "materialized_view", shim_dp.materialized_view)
-    setattr(shim_module, "expect_or_fail", shim_dp.expect_or_fail)
+    for attr in (
+        # Core decorators
+        "table", "materialized_view", "temporary_view", "append_flow", "view",
+        # Expectation decorators
+        "expect", "expect_or_drop", "expect_or_fail",
+        # Sink decorator
+        "foreach_batch_sink",
+        # No-op functions
+        "create_streaming_table", "create_sink",
+        "apply_changes", "create_auto_cdc_flow",
+        "create_auto_cdc_from_snapshot_flow",
+    ):
+        setattr(shim_module, attr, getattr(pipelines_shim, attr))
     sys.modules["pyspark.pipelines"] = shim_module
     try:
         spec.loader.exec_module(module)
