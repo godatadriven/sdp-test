@@ -4,6 +4,9 @@ Registers as a pytest plugin via the ``pytest11`` entry point. When installed,
 ``*_pipeline_tests.yml`` files are collected automatically — no conftest.py or
 test_*.py boilerplate required.
 
+Also auto-discovers tests from ``databricks.yml`` and ``spark-pipeline.yml``
+files, so no separate test spec file is needed at all.
+
 Configuration resolution order for ``bundle_file``:
     1. ``pyproject.toml`` ``[tool.sdp-test].bundle_file``
     2. ``databricks.yml`` in project root (if it exists)
@@ -18,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from .spec_runner import cases_from_spec, run_case
+from .spec_runner import cases_from_bundle, cases_from_pipeline_file, cases_from_spec, run_case
 
 
 class SDPTestFailure(Exception):
@@ -62,6 +65,10 @@ def _resolve_bundle_file(config) -> Path | None:
 def pytest_collect_file(parent, file_path):
     if file_path.suffix in (".yml", ".yaml") and file_path.stem.endswith("_pipeline_tests"):
         return SDPSpecFile.from_parent(parent, path=file_path)
+    if file_path.name == "databricks.yml":
+        return BundleFile.from_parent(parent, path=file_path)
+    if file_path.name in ("spark-pipeline.yml", "spark-pipeline.yaml"):
+        return PipelineFile.from_parent(parent, path=file_path)
 
 
 class SDPSpecFile(pytest.File):
@@ -73,6 +80,29 @@ class SDPSpecFile(pytest.File):
             suite = spec_file.stem.replace(".unit_tests", "")
             name = case.get("name", "unnamed")
             test_name = f"{suite}::{name}" if spec_file != self.path else name
+            yield SDPTestItem.from_parent(self, name=test_name, case=case)
+
+
+class BundleFile(pytest.File):
+    """Collector for a ``databricks.yml`` bundle file — auto-discovers tests from all pipelines."""
+
+    def collect(self):
+        for spec_file, case, _context in cases_from_bundle(self.path):
+            pipeline_name = case.get("pipeline_name") or "pipeline"
+            suite = spec_file.stem.replace(".unit_tests", "")
+            name = case.get("name", "unnamed")
+            test_name = f"{pipeline_name}::{suite}::{name}"
+            yield SDPTestItem.from_parent(self, name=test_name, case=case)
+
+
+class PipelineFile(pytest.File):
+    """Collector for a ``spark-pipeline.yml`` file — auto-discovers tests."""
+
+    def collect(self):
+        for spec_file, case, _context in cases_from_pipeline_file(self.path):
+            suite = spec_file.stem.replace(".unit_tests", "")
+            name = case.get("name", "unnamed")
+            test_name = f"{suite}::{name}"
             yield SDPTestItem.from_parent(self, name=test_name, case=case)
 
 

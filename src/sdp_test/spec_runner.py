@@ -104,6 +104,57 @@ def cases_from_spec(
     return cases
 
 
+def cases_from_pipeline_def(
+    pipeline_def: dict[str, Any],
+    context: dict[str, Any],
+    source_path: Path,
+) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
+    """Discover and return test cases directly from a pipeline definition.
+
+    Works for both Databricks bundle pipeline defs and open source spark-pipeline.yml.
+    No ``*_pipeline_tests.yml`` spec file needed.
+    """
+    defaults = _extract_pipeline_defaults(pipeline_def)
+    cases: list[tuple[Path, dict[str, Any], dict[str, Any]]] = []
+
+    for unit_spec_file in _discover_unit_spec_files(pipeline_def, context):
+        unit_spec = UnitSpec.model_validate(load_pipeline_test_spec(str(unit_spec_file)))
+        unit_spec_data = unit_spec.model_dump(exclude_none=True)
+        unit_log_level = _normalize_log_level(unit_spec_data.get("log_level"), "ERROR")
+        for test in unit_spec_data.get("tests") or []:
+            merged = {**defaults, **test}
+            merged_context = {**context, **defaults}
+            case = resolve_template(merged, merged_context)
+            case["__log_level"] = _normalize_log_level(case.get("log_level"), unit_log_level)
+            case["__spec_dir"] = str(unit_spec_file.parent)
+            cases.append((unit_spec_file, case, context))
+    return cases
+
+
+def cases_from_bundle(bundle_path: Path) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
+    """Load a ``databricks.yml`` and return test cases for all pipelines."""
+    context = load_bundle_context(str(bundle_path))
+    pipelines = (context.get("resources") or {}).get("pipelines") or {}
+    cases: list[tuple[Path, dict[str, Any], dict[str, Any]]] = []
+    for pipeline_def in pipelines.values():
+        cases.extend(cases_from_pipeline_def(pipeline_def, context, bundle_path))
+    return cases
+
+
+def cases_from_pipeline_file(pipeline_path: Path) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
+    """Load a ``spark-pipeline.yml`` and return test cases."""
+    pipeline_data = yaml.safe_load(pipeline_path.read_text()) or {}
+    pipeline_data["__pipeline_spec_dir"] = str(pipeline_path.parent)
+    context: dict[str, Any] = {
+        "bundle": {"name": "default", "uuid": None, "target": "local"},
+        "var": {},
+        "resources": {},
+        "workspace": {"file_path": str(pipeline_path.parent)},
+    }
+    pipeline_data = resolve_template(pipeline_data, context)
+    return cases_from_pipeline_def(pipeline_data, context, pipeline_path)
+
+
 def all_cases(
     search_dir: Path | None = None,
     default_bundle_file: Path | None = None,
