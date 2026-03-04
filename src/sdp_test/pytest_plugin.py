@@ -1,15 +1,18 @@
 """Pytest plugin for automatic SDP test collection.
 
 Registers as a pytest plugin via the ``pytest11`` entry point. When installed,
-``*_pipeline_tests.yml`` files are collected automatically — no conftest.py or
-test_*.py boilerplate required.
+tests are discovered automatically from pipeline definitions — no conftest.py,
+test_*.py, or pipeline test spec needed.
 
-Also auto-discovers tests from ``databricks.yml`` and ``spark-pipeline.yml``
-files, so no separate test spec file is needed at all.
+Discovery order:
+    1. ``databricks.yml`` in the project root — discovers tests from all pipelines
+    2. ``spark-pipeline.yml`` anywhere in the scanned tree
+    3. ``*_pipeline_tests.yml`` spec files anywhere in the scanned tree
 
-Configuration resolution order for ``bundle_file``:
-    1. ``pyproject.toml`` ``[tool.sdp-test].bundle_file``
-    2. ``databricks.yml`` in project root (if it exists)
+The ``databricks.yml`` path can be customised in ``pyproject.toml``:
+
+    [tool.sdp-test]
+    bundle_file = "path/to/databricks.yml"
 
 Disable with ``pytest -p no:sdp_test`` if you prefer the manual approach.
 """
@@ -23,6 +26,10 @@ import pytest
 
 from .spec_runner import cases_from_bundle, cases_from_pipeline_file, cases_from_spec, run_case
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 class SDPTestFailure(Exception):
     """Raised when a pipeline test case does not match expected output."""
@@ -62,7 +69,39 @@ def _resolve_bundle_file(config) -> Path | None:
     return default if default.exists() else None
 
 
+# ---------------------------------------------------------------------------
+# Pytest hooks
+# ---------------------------------------------------------------------------
+
+def pytest_configure(config):
+    """Ensure the root bundle file is included in pytest's collection paths.
+
+    When ``testpaths`` restricts scanning to a subdirectory (e.g. ``tests/``),
+    pytest never visits the project root so ``pytest_collect_file`` never sees
+    ``databricks.yml``.  This hook adds the bundle file as an explicit argument
+    so that auto-discovery just works with a bare ``pytest``.
+    """
+    # Only inject when the user ran a bare ``pytest`` (no explicit file args).
+    # config.args contains the resolved initial arguments; when the user passes
+    # nothing, pytest fills it from testpaths/rootdir.  We detect this by
+    # checking whether any arg points to a .yml file that we would collect.
+    if config.args and any(
+        Path(a).suffix in (".yml", ".yaml") and (
+            Path(a).stem.endswith("_pipeline_tests")
+            or Path(a).name == "databricks.yml"
+            or Path(a).name.startswith("spark-pipeline")
+        )
+        for a in config.args
+    ):
+        return
+
+    bundle_path = _resolve_bundle_file(config)
+    if bundle_path is not None and bundle_path.exists():
+        config.args.append(str(bundle_path))
+
+
 def pytest_collect_file(parent, file_path):
+    """Collect SDP test files encountered during normal directory traversal."""
     if file_path.suffix in (".yml", ".yaml") and file_path.stem.endswith("_pipeline_tests"):
         return SDPSpecFile.from_parent(parent, path=file_path)
     if file_path.name == "databricks.yml":
@@ -70,6 +109,10 @@ def pytest_collect_file(parent, file_path):
     if file_path.name in ("spark-pipeline.yml", "spark-pipeline.yaml"):
         return PipelineFile.from_parent(parent, path=file_path)
 
+
+# ---------------------------------------------------------------------------
+# Collectors
+# ---------------------------------------------------------------------------
 
 class SDPSpecFile(pytest.File):
     """Collector for a ``*_pipeline_tests.yml`` spec file."""
@@ -105,6 +148,10 @@ class PipelineFile(pytest.File):
             test_name = f"{suite}::{name}"
             yield SDPTestItem.from_parent(self, name=test_name, case=case)
 
+
+# ---------------------------------------------------------------------------
+# Test item
+# ---------------------------------------------------------------------------
 
 class SDPTestItem(pytest.Item):
     """A single pipeline test case."""

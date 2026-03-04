@@ -55,14 +55,14 @@ tests:
 ### 2. Run tests
 
 ```bash
-pytest databricks.yml
+pytest
 ```
 
 That's it. No `conftest.py`, no `test_*.py`, no pipeline test spec file needed.
 
 The plugin automatically:
-- Reads your `databricks.yml` to find all pipeline definitions
-- Resolves `configuration` variables (like `${bronze_schema}`) from each pipeline
+- Finds `databricks.yml` in your project root (or `spark-pipeline.yml` for open source SDP)
+- Reads all pipeline definitions and resolves `configuration` variables (like `${bronze_schema}`)
 - Discovers `*.unit_tests.yml` files from the pipeline's `libraries` paths
 - Creates a local SparkSession and runs each test case
 - Reports results with clear failure messages
@@ -80,15 +80,15 @@ sdp-test scans those library paths for `*.unit_tests.yml` files colocated with y
 
 There are three ways to use sdp-test, from simplest to most configurable.
 
-### Option A: Direct from `databricks.yml` (recommended)
+### Option A: Automatic from `databricks.yml` (recommended)
 
-Point pytest directly at your bundle file:
+Just run:
 
 ```bash
-pytest databricks.yml
+pytest
 ```
 
-sdp-test reads all pipeline definitions from the bundle (including any `include`-ed resource files) and auto-discovers tests for each one.
+sdp-test automatically finds `databricks.yml` in your project root, reads all pipeline definitions (including any `include`-ed resource files), and auto-discovers tests for each one.
 
 Example output:
 
@@ -98,12 +98,12 @@ databricks.yml::jaffle_shop_sql::orders::order_items_compute_to_bools  PASSED
 databricks.yml::jaffle_shop_python::stg_products::maps_price_correctly PASSED
 ```
 
-### Option B: Direct from `spark-pipeline.yml` (open source SDP)
+### Option B: Automatic from `spark-pipeline.yml` (open source SDP)
 
-If you're using open source Spark Declarative Pipelines (without Databricks bundles), point pytest at your pipeline file:
+If you're using open source Spark Declarative Pipelines (without Databricks bundles), pytest auto-discovers `spark-pipeline.yml` files when they're inside the scanned tree:
 
 ```bash
-pytest spark-pipeline.yml
+pytest
 ```
 
 A `spark-pipeline.yml` looks like:
