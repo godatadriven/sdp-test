@@ -94,8 +94,14 @@ def pytest_configure(config):
     ``databricks.yml`` or ``spark-pipeline.yml``.  This hook adds any pipeline
     definition files found in the project root as extra collection arguments
     so that a bare ``pytest`` just works.
+
+    Disable with ``[tool.sdp-test] auto_discover = false`` in pyproject.toml.
     """
     rootdir = Path(config.rootdir)
+    cfg = _load_sdp_config(rootdir)
+    if cfg.get("auto_discover") is False:
+        return
+
     resolved_args: set[Path] = set()
     for arg in config.args:
         try:
@@ -115,6 +121,8 @@ def pytest_collect_file(parent, file_path):
     if file_path.name == "databricks.yml":
         return BundleFile.from_parent(parent, path=file_path)
     if file_path.name in ("spark-pipeline.yml", "spark-pipeline.yaml"):
+        return PipelineFile.from_parent(parent, path=file_path)
+    if file_path.suffix in (".yml", ".yaml") and file_path.stem.endswith(".pipeline"):
         return PipelineFile.from_parent(parent, path=file_path)
 
 

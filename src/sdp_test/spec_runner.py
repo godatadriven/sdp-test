@@ -108,6 +108,8 @@ def cases_from_pipeline_def(
     pipeline_def: dict[str, Any],
     context: dict[str, Any],
     source_path: Path,
+    *,
+    lenient: bool = False,
 ) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
     """Discover and return test cases directly from a pipeline definition.
 
@@ -124,7 +126,7 @@ def cases_from_pipeline_def(
         for test in unit_spec_data.get("tests") or []:
             merged = {**defaults, **test}
             merged_context = {**context, **defaults}
-            case = resolve_template(merged, merged_context)
+            case = resolve_template(merged, merged_context, lenient=lenient)
             case["__log_level"] = _normalize_log_level(case.get("log_level"), unit_log_level)
             case["__spec_dir"] = str(unit_spec_file.parent)
             cases.append((unit_spec_file, case, context))
@@ -142,17 +144,35 @@ def cases_from_bundle(bundle_path: Path) -> list[tuple[Path, dict[str, Any], dic
 
 
 def cases_from_pipeline_file(pipeline_path: Path) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
-    """Load a ``spark-pipeline.yml`` and return test cases."""
+    """Load a pipeline definition file and return test cases.
+
+    Supports three formats:
+    - Open source ``spark-pipeline.yml`` — top-level pipeline definition
+    - Databricks resource file (``*.pipeline.yml``) — ``resources.pipelines.*``
+    - Databricks bundle (``databricks.yml``) — delegates to :func:`cases_from_bundle`
+    """
     pipeline_data = yaml.safe_load(pipeline_path.read_text()) or {}
-    pipeline_data["__pipeline_spec_dir"] = str(pipeline_path.parent)
     context: dict[str, Any] = {
         "bundle": {"name": "default", "uuid": None, "target": "local"},
         "var": {},
         "resources": {},
         "workspace": {"file_path": str(pipeline_path.parent)},
     }
-    pipeline_data = resolve_template(pipeline_data, context)
-    return cases_from_pipeline_def(pipeline_data, context, pipeline_path)
+
+    # Databricks resource file: resources.pipelines.<key>
+    resource_pipelines = (pipeline_data.get("resources") or {}).get("pipelines")
+    if resource_pipelines:
+        cases: list[tuple[Path, dict[str, Any], dict[str, Any]]] = []
+        for pipeline_def in resource_pipelines.values():
+            resolved_def = resolve_template(pipeline_def, context, lenient=True)
+            resolved_def["__pipeline_spec_dir"] = str(pipeline_path.parent)
+            cases.extend(cases_from_pipeline_def(resolved_def, context, pipeline_path, lenient=True))
+        return cases
+
+    # Open source spark-pipeline.yml: top-level pipeline definition
+    pipeline_data["__pipeline_spec_dir"] = str(pipeline_path.parent)
+    pipeline_data = resolve_template(pipeline_data, context, lenient=True)
+    return cases_from_pipeline_def(pipeline_data, context, pipeline_path, lenient=True)
 
 
 def all_cases(
@@ -331,8 +351,17 @@ def _discover_unit_spec_files(pipeline_def: dict[str, Any], context: dict[str, A
     for library in libraries:
         file_entry = (library or {}).get("file")
         if file_entry:
-            resolved_file = resolve_template(file_entry, context)
-            candidate_file = (base_dir / str(resolved_file)).resolve()
+            resolved_file = resolve_template(file_entry, context, lenient=True)
+            # file_entry can be a string or {"path": "..."} dict.
+            if isinstance(resolved_file, dict):
+                resolved_file = resolved_file.get("path") or ""
+            file_str = str(resolved_file)
+            # Strip glob suffixes to get the base directory.
+            if "**" in file_str:
+                file_str = file_str.split("**", 1)[0].rstrip("/")
+            elif "*" in file_str:
+                file_str = str(Path(file_str).parent)
+            candidate_file = (base_dir / file_str).resolve()
             if candidate_file.is_dir():
                 library_roots.add(candidate_file)
             elif candidate_file.exists():
@@ -374,11 +403,11 @@ def _discover_unit_spec_files(pipeline_def: dict[str, Any], context: dict[str, A
     if not library_roots and not unit_files:
         root_path = pipeline_def.get("root_path")
         if not root_path:
-            raise ValueError("Pipeline definition must include libraries.glob.include or root_path")
-        resolved_root = resolve_template(root_path, context) if isinstance(root_path, str) else root_path
+            return []
+        resolved_root = resolve_template(root_path, context, lenient=True) if isinstance(root_path, str) else root_path
         root_dir = Path(str(resolved_root))
         if not root_dir.exists():
-            raise FileNotFoundError(f"Pipeline root_path does not exist: {root_dir}")
+            return []
         library_roots.add(root_dir)
 
     files = set()

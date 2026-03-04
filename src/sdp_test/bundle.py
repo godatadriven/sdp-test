@@ -27,9 +27,14 @@ def _lookup_path(context: dict[str, Any], path_expr: str) -> Any:
     return current
 
 
-def _resolve_str(text: str, context: dict[str, Any]) -> str:
+def _resolve_str(text: str, context: dict[str, Any], *, lenient: bool = False) -> str:
     def _replace(match: re.Match[str]) -> str:
-        value = _lookup_path(context, match.group(1).strip())
+        try:
+            value = _lookup_path(context, match.group(1).strip())
+        except KeyError:
+            if lenient:
+                return match.group(0)  # keep placeholder as-is
+            raise
         if isinstance(value, (dict, list)):
             raise ValueError(f"Cannot interpolate non-scalar value for {match.group(0)}")
         return "" if value is None else str(value)
@@ -37,13 +42,19 @@ def _resolve_str(text: str, context: dict[str, Any]) -> str:
     return PLACEHOLDER_RE.sub(_replace, text)
 
 
-def resolve_template(value: Any, context: dict[str, Any]) -> Any:
+def resolve_template(value: Any, context: dict[str, Any], *, lenient: bool = False) -> Any:
+    """Resolve ``${...}`` placeholders in *value* using *context*.
+
+    When *lenient* is ``True``, unresolvable placeholders are kept as-is
+    instead of raising ``KeyError``.  This is useful when loading resource
+    files without a full bundle context.
+    """
     if isinstance(value, str):
-        return _resolve_str(value, context)
+        return _resolve_str(value, context, lenient=lenient)
     if isinstance(value, list):
-        return [resolve_template(item, context) for item in value]
+        return [resolve_template(item, context, lenient=lenient) for item in value]
     if isinstance(value, dict):
-        return {key: resolve_template(item, context) for key, item in value.items()}
+        return {key: resolve_template(item, context, lenient=lenient) for key, item in value.items()}
     return value
 
 
