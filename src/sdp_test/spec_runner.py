@@ -578,8 +578,23 @@ def _coerce_expected_rows(expect_rows: list[dict[str, Any]], schema):
 
 
 def _clear_schemas(spark, schema_names: set[str]) -> None:
+    import shutil
+
     for schema in sorted(schema_names):
         spark.sql(f"DROP DATABASE IF EXISTS {schema} CASCADE")
+
+    # Spark's local mode may leave behind physical directories after
+    # DROP DATABASE CASCADE, causing LOCATION_ALREADY_EXISTS on subsequent
+    # saveAsTable calls.  Remove them explicitly.
+    try:
+        warehouse_dir = spark.conf.get("spark.sql.warehouse.dir")
+        warehouse_path = Path(warehouse_dir.removeprefix("file:"))
+        for schema in sorted(schema_names):
+            schema_dir = warehouse_path / f"{schema}.db"
+            if schema_dir.exists():
+                shutil.rmtree(schema_dir)
+    except Exception:  # noqa: BLE001
+        pass  # Best-effort cleanup; don't fail the test if this doesn't work.
 
 
 def _schema_map_from_case(case: dict[str, Any]) -> dict[str, str]:
