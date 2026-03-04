@@ -9,6 +9,9 @@ from pyspark.sql import DataFrame, SparkSession
 
 def _model_query(sql_text: str) -> str:
     """Extract the SELECT query from a Lakeflow/DDL model SQL file.
+
+    Also strips ``STREAM(table_ref)`` wrappers so that streaming-table
+    models can be tested with regular (batch) tables locally.
     """
     match = re.search(r"\bAS\s+(?=(?:SELECT|WITH)\b)", sql_text, flags=re.IGNORECASE)
     if not match:
@@ -16,6 +19,8 @@ def _model_query(sql_text: str) -> str:
     query = sql_text[match.end() :].strip()
     if query.endswith(";"):
         query = query[:-1]
+    # Replace STREAM(table_ref) with just table_ref for local batch execution.
+    query = re.sub(r"\bSTREAM\s*\(([^)]+)\)", r"\1", query, flags=re.IGNORECASE)
     return query
 
 
