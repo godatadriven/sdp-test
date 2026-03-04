@@ -377,6 +377,16 @@ def _discover_unit_spec_files(pipeline_def: dict[str, Any], context: dict[str, A
     libraries = pipeline_def.get("libraries") or []
 
     for library in libraries:
+        # Open source format: libraries can be a simple string path (e.g. "- transformations/**")
+        if isinstance(library, str):
+            resolved_lib = resolve_template(library, context, lenient=True)
+            base_pattern = str(resolved_lib).split("**", 1)[0].rstrip("/")
+            if base_pattern:
+                candidate = (base_dir / base_pattern).resolve()
+                if candidate.exists():
+                    library_roots.add(candidate)
+            continue
+
         file_entry = (library or {}).get("file")
         if file_entry:
             resolved_file = resolve_template(file_entry, context, lenient=True)
@@ -404,16 +414,6 @@ def _discover_unit_spec_files(pipeline_def: dict[str, Any], context: dict[str, A
                         unit_files.add(sibling_yml)
                     if sibling_yaml.exists():
                         unit_files.add(sibling_yaml)
-
-        # Open source format: libraries can be a simple string path (e.g. "- transformations/**")
-        if isinstance(library, str):
-            resolved_lib = resolve_template(library, context)
-            base_pattern = str(resolved_lib).split("**", 1)[0].rstrip("/")
-            if base_pattern:
-                candidate = (base_dir / base_pattern).resolve()
-                if candidate.exists():
-                    library_roots.add(candidate)
-            continue
 
         glob_cfg = (library or {}).get("glob") or {}
         include_pattern = glob_cfg.get("include")

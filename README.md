@@ -120,32 +120,7 @@ libraries:
   - transformations/**
 ```
 
-### Option C: From a pipeline resource file (no bundle needed)
-
-You can also run tests directly from a Databricks pipeline resource file (`*.pipeline.yml`) — without needing a full `databricks.yml` bundle:
-
-```bash
-pytest resources/my_pipeline.pipeline.yml
-```
-
-This is useful when you want to test a single pipeline in isolation. The resource file format is the standard Databricks resource format:
-
-```yaml
-resources:
-  pipelines:
-    my_pipeline:
-      name: my_pipeline
-      configuration:
-        bronze_schema: bronze
-        silver_schema: silver
-      libraries:
-        - file:
-            path: ../src/transformations/**/*.sql
-```
-
-Any `${var.*}` or `${bundle.*}` placeholders that can't be resolved without a bundle are kept as-is (lenient resolution), so tests work as long as the `configuration` section provides the variables your test specs need.
-
-### Option D: Using a pipeline test spec (advanced)
+### Option C: Using a pipeline test spec (advanced)
 
 For more control, create a `*_pipeline_tests.yml` file that wires up a pipeline with custom variable overrides and defaults:
 
@@ -451,12 +426,10 @@ resources:
             path: ../src/my_pipeline/transformations/**/*.sql
 ```
 
-Run tests (auto-discovered with bare `pytest`, or explicitly):
+Run tests:
 
 ```bash
 pytest
-# or
-pytest databricks.yml
 ```
 
 ### Open source SDP project
@@ -473,12 +446,10 @@ my-project/
             orders.unit_tests.yml
 ```
 
-Run tests (auto-discovered with bare `pytest`, or explicitly):
+Run tests:
 
 ```bash
 pytest
-# or
-pytest spark-pipeline.yml
 ```
 
 ## Configuration
