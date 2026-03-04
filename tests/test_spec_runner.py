@@ -267,6 +267,22 @@ def test_model_query_raises_on_missing_as_select() -> None:
         _model_query("SELECT id FROM table")
 
 
+def test_model_query_strips_stream_wrapper() -> None:
+    sql = (
+        "CREATE OR REFRESH STREAMING TABLE t AS\n"
+        "WITH cte AS (\n"
+        "  SELECT * FROM STREAM(silver.orders)\n"
+        ")\n"
+        "SELECT cte.id, s.name\n"
+        "FROM cte\n"
+        "JOIN STREAM(silver.products) s ON cte.product_id = s.id"
+    )
+    query = _model_query(sql)
+    assert "STREAM(" not in query
+    assert "FROM silver.orders" in query
+    assert "JOIN silver.products s" in query
+
+
 def test_rows_as_dicts_extracts_columns(spark) -> None:
     df = spark.createDataFrame([{"a": "1", "b": "2"}, {"a": "3", "b": "4"}])
     result = rows_as_dicts(df, ["a"])
