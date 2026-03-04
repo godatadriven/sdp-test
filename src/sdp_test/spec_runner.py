@@ -213,10 +213,17 @@ def case_id(spec_file: Path, case: dict[str, Any]) -> str:
 
 
 def run_case(spark, case: dict[str, Any]) -> CaseResult:
-    schema_names = set()
+    schema_names: set[str] = set()
+    # Collect schemas from well-known keys (backward compatibility).
     for key in ("bronze_schema", "silver_schema", "gold_schema"):
         if key in case:
             schema_names.add(case[key])
+    # Also collect schemas referenced in the given inputs so they are cleared
+    # even when the pipeline uses custom configuration key names.
+    for input_spec in case.get("given") or []:
+        table = input_spec.get("table", "")
+        if "." in table:
+            schema_names.add(table.split(".", 1)[0])
     _clear_schemas(spark, schema_names)
 
     test_name = case.get("name", "unnamed")
@@ -540,11 +547,19 @@ def _clear_schemas(spark, schema_names: set[str]) -> None:
 
 
 def _schema_map_from_case(case: dict[str, Any]) -> dict[str, str]:
-    schema_map: dict[str, str] = {}
-    for key in ("bronze_schema", "silver_schema", "gold_schema"):
-        if key in case:
-            schema_map[key] = case[key]
-    return schema_map
+    """Build a substitution map from all string-valued pipeline config in the case.
+
+    Pipeline configuration keys (e.g. ``gold_schema_name``, ``silver_schema``) are used
+    to replace ``${key}`` placeholders in SQL model files.  Rather than hard-coding a
+    fixed set of key names we include every string-valued entry from the case dict,
+    except for internal/structural keys that are never meant as SQL placeholders.
+    """
+    _skip_keys = frozenset({
+        "model", "name", "given", "expect", "callable",
+        "__spec_dir", "__suite", "__pipeline_spec_dir",
+        "pipeline_name", "pipeline_schema", "catalog",
+    })
+    return {k: str(v) for k, v in case.items() if isinstance(v, str) and k not in _skip_keys}
 
 
 def _model_path(case: dict[str, Any]) -> Path:
