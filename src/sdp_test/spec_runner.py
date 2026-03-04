@@ -13,7 +13,7 @@ from typing import Any
 import uuid
 
 import yaml
-from pyspark.sql.types import DateType, DecimalType, TimestampType
+from pyspark.sql.types import DateType, DecimalType, StringType, StructField, StructType, TimestampType
 
 from .bundle import load_bundle_context, load_pipeline_test_spec, resolve_template
 from .model_sql import register_df_as_view, render_model_query
@@ -212,6 +212,31 @@ def case_id(spec_file: Path, case: dict[str, Any]) -> str:
     return f"{suite}::{case.get('name', 'unnamed')}"
 
 
+def _create_df_with_fallback_schema(spark, rows: list[dict[str, Any]]):
+    """Create a DataFrame from row dicts, falling back to explicit schema when inference fails.
+
+    Spark cannot determine the type of a column when every value is ``None``.
+    This helper catches the ``CANNOT_DETERMINE_TYPE`` error and retries with an
+    explicit schema that defaults null-only columns to ``StringType``.
+    """
+    try:
+        return spark.createDataFrame(rows)
+    except Exception:  # noqa: BLE001
+        # Build explicit schema: infer non-null types via a single-row probe,
+        # default null-only columns to StringType.
+        columns = list(rows[0].keys())
+        fields: list[StructField] = []
+        for col in columns:
+            sample = next((r[col] for r in rows if r.get(col) is not None), None)
+            if sample is None:
+                fields.append(StructField(col, StringType(), True))
+            else:
+                # Let Spark infer the type from a single non-null value.
+                probe = spark.createDataFrame([{col: sample}])
+                fields.append(StructField(col, probe.schema[0].dataType, True))
+        return spark.createDataFrame(rows, schema=StructType(fields))
+
+
 def run_case(spark, case: dict[str, Any]) -> CaseResult:
     schema_names: set[str] = set()
     # Collect schemas from well-known keys (backward compatibility).
@@ -246,7 +271,7 @@ def run_case(spark, case: dict[str, Any]) -> CaseResult:
             spark.sql(f"DROP TABLE IF EXISTS {schema_name}.{table_name}")
             spark.sql(f"CREATE TABLE {schema_name}.{table_name} (_placeholder STRING)")
         else:
-            df = spark.createDataFrame(rows)
+            df = _create_df_with_fallback_schema(spark, rows)
             register_df_as_view(spark, df, schema_name, table_name)
         registered_tables.add(f"{schema_name}.{table_name}")
 
