@@ -79,18 +79,48 @@ def _find_pipeline_files(rootdir: Path) -> list[Path]:
 # Pytest hooks
 # ---------------------------------------------------------------------------
 
+_PIPELINE_SUFFIXES = {".yml", ".yaml"}
+_PIPELINE_NAMES = {"databricks.yml", "spark-pipeline.yml", "spark-pipeline.yaml"}
+
+
+def _is_pipeline_arg(arg: str) -> bool:
+    """Check if a CLI arg looks like a pipeline definition file."""
+    p = Path(arg)
+    if p.name in _PIPELINE_NAMES:
+        return True
+    if p.suffix in _PIPELINE_SUFFIXES and p.stem.endswith(".pipeline"):
+        return True
+    return False
+
+
 def pytest_configure(config):  # pragma: no cover – runs in subprocess via pytester
     """Auto-discover pipeline definition files and inject them for collection.
 
-    Only auto-discovered files are collected — passing pipeline files as
-    explicit CLI arguments is not supported.
+    Pipeline files passed as explicit CLI arguments (e.g.
+    ``pytest sdp/spark-pipeline.yml``) are always collected.  In addition,
+    when ``auto_discover`` is enabled (the default), the plugin injects
+    pipeline files found in the project root.
 
-    Disable with ``[tool.sdp-test] auto_discover = false`` in pyproject.toml.
+    Disable auto-discovery with ``[tool.sdp-test] auto_discover = false``.
     """
     rootdir = Path(config.rootdir)
     cfg = _load_sdp_config(rootdir)
 
-    if cfg.get("auto_discover") is False:
+    # Always track explicit CLI args so they can be collected even when
+    # auto_discover is disabled.
+    explicit_pipeline_args: set[Path] = set()
+    for arg in config.args:
+        try:
+            resolved = Path(arg).resolve()
+            if _is_pipeline_arg(arg) and resolved.exists():
+                explicit_pipeline_args.add(resolved)
+        except (OSError, ValueError):
+            pass
+    config._sdp_explicit_pipeline_args = explicit_pipeline_args
+
+    # If the user explicitly passed pipeline files, skip auto-discovery
+    # to avoid collecting duplicate tests.
+    if cfg.get("auto_discover") is False or explicit_pipeline_args:
         return
 
     resolved_args: set[Path] = set()
@@ -116,10 +146,12 @@ def pytest_collect_file(parent, file_path):  # pragma: no cover – runs in subp
     if file_path.suffix in (".yml", ".yaml") and file_path.stem.endswith("_pipeline_tests"):
         return SDPSpecFile.from_parent(parent, path=file_path)
 
-    # Only collect pipeline definition files that were auto-discovered
-    # (not passed explicitly by the user).
+    # Collect pipeline definition files that were auto-discovered OR
+    # explicitly passed as CLI arguments.
+    resolved = file_path.resolve()
     discovered = getattr(parent.config, "_sdp_discovered_files", set())
-    if file_path.resolve() not in discovered:
+    explicit = getattr(parent.config, "_sdp_explicit_pipeline_args", set())
+    if resolved not in discovered and resolved not in explicit:
         return None
 
     if file_path.name == "databricks.yml":
