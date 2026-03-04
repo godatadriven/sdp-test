@@ -100,7 +100,7 @@ databricks.yml::jaffle_shop_python::stg_products::maps_price_correctly PASSED
 
 ### Option B: Automatic from `spark-pipeline.yml` (open source SDP)
 
-If you're using open source Spark Declarative Pipelines (without Databricks bundles), pytest auto-discovers `spark-pipeline.yml` files when they're inside the scanned tree:
+If you're using open source Spark Declarative Pipelines (without Databricks bundles), pytest auto-discovers `spark-pipeline.yml` files in the project root:
 
 ```bash
 pytest
@@ -120,7 +120,32 @@ libraries:
   - transformations/**
 ```
 
-### Option C: Using a pipeline test spec (advanced)
+### Option C: From a pipeline resource file (no bundle needed)
+
+You can also run tests directly from a Databricks pipeline resource file (`*.pipeline.yml`) — without needing a full `databricks.yml` bundle:
+
+```bash
+pytest resources/my_pipeline.pipeline.yml
+```
+
+This is useful when you want to test a single pipeline in isolation. The resource file format is the standard Databricks resource format:
+
+```yaml
+resources:
+  pipelines:
+    my_pipeline:
+      name: my_pipeline
+      configuration:
+        bronze_schema: bronze
+        silver_schema: silver
+      libraries:
+        - file:
+            path: ../src/transformations/**/*.sql
+```
+
+Any `${var.*}` or `${bundle.*}` placeholders that can't be resolved without a bundle are kept as-is (lenient resolution), so tests work as long as the `configuration` section provides the variables your test specs need.
+
+### Option D: Using a pipeline test spec (advanced)
 
 For more control, create a `*_pipeline_tests.yml` file that wires up a pipeline with custom variable overrides and defaults:
 
@@ -426,9 +451,11 @@ resources:
             path: ../src/my_pipeline/transformations/**/*.sql
 ```
 
-Run tests:
+Run tests (auto-discovered with bare `pytest`, or explicitly):
 
 ```bash
+pytest
+# or
 pytest databricks.yml
 ```
 
@@ -446,9 +473,11 @@ my-project/
             orders.unit_tests.yml
 ```
 
-Run tests:
+Run tests (auto-discovered with bare `pytest`, or explicitly):
 
 ```bash
+pytest
+# or
 pytest spark-pipeline.yml
 ```
 
@@ -456,14 +485,24 @@ pytest spark-pipeline.yml
 
 ### pyproject.toml
 
-Point to a custom bundle file location (default: `databricks.yml` in project root):
-
 ```toml
 [tool.sdp-test]
+# Point to a custom bundle file location (default: databricks.yml in project root)
 bundle_file = "path/to/databricks.yml"
+
+# Disable auto-discovery of pipeline files from the project root (default: true)
+auto_discover = false
 ```
 
-### Disabling the plugin
+#### `bundle_file`
+
+Override the default bundle file location. By default, sdp-test looks for `databricks.yml` in the project root.
+
+#### `auto_discover`
+
+When `true` (the default), sdp-test automatically finds `databricks.yml`, `spark-pipeline.yml`, or `spark-pipeline.yaml` in your project root and includes them in pytest's collection — even when `testpaths` points elsewhere. Set to `false` to disable this behavior and only collect pipeline files that are explicitly passed as arguments or fall within `testpaths`.
+
+### Disabling the plugin entirely
 
 ```bash
 pytest -p no:sdp_test
@@ -544,7 +583,7 @@ from sdp_test import PipelineEntrySpec, UnitSpec, TestCaseSpec
 | Function | Description |
 |---|---|
 | `cases_from_bundle(bundle_path)` | Discover tests from a `databricks.yml` file (all pipelines) |
-| `cases_from_pipeline_file(pipeline_path)` | Discover tests from a `spark-pipeline.yml` file |
+| `cases_from_pipeline_file(pipeline_path)` | Discover tests from a `spark-pipeline.yml` or `*.pipeline.yml` resource file |
 | `cases_from_spec(spec_path, default_bundle_file)` | Process a `*_pipeline_tests.yml` spec file |
 | `all_cases(search_dir, default_bundle_file)` | Recursively find and process all `*_pipeline_tests.yml` files |
 | `run_case(spark, case)` | Execute a single test case, returns `CaseResult` |
