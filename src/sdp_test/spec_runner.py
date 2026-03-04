@@ -143,6 +143,20 @@ def cases_from_bundle(bundle_path: Path) -> list[tuple[Path, dict[str, Any], dic
     return cases
 
 
+def _find_bundle_file(start: Path) -> Path | None:
+    """Walk up from *start* looking for ``databricks.yml``."""
+    current = start if start.is_dir() else start.parent
+    for _ in range(10):  # safety limit
+        candidate = current / "databricks.yml"
+        if candidate.exists():
+            return candidate
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return None
+
+
 def cases_from_pipeline_file(pipeline_path: Path) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
     """Load a pipeline definition file and return test cases.
 
@@ -152,12 +166,16 @@ def cases_from_pipeline_file(pipeline_path: Path) -> list[tuple[Path, dict[str, 
     - Databricks bundle (``databricks.yml``) — delegates to :func:`cases_from_bundle`
     """
     pipeline_data = yaml.safe_load(pipeline_path.read_text()) or {}
-    context: dict[str, Any] = {
-        "bundle": {"name": "default", "uuid": None, "target": "local"},
-        "var": {},
-        "resources": {},
-        "workspace": {"file_path": str(pipeline_path.parent)},
-    }
+
+    # Try to load context from a nearby databricks.yml for full resource resolution.
+    bundle_file = _find_bundle_file(pipeline_path)
+    if bundle_file:
+        try:
+            context = load_bundle_context(str(bundle_file))
+        except Exception:  # noqa: BLE001
+            context = _minimal_context(pipeline_path)
+    else:
+        context = _minimal_context(pipeline_path)
 
     # Databricks resource file: resources.pipelines.<key>
     resource_pipelines = (pipeline_data.get("resources") or {}).get("pipelines")
@@ -173,6 +191,16 @@ def cases_from_pipeline_file(pipeline_path: Path) -> list[tuple[Path, dict[str, 
     pipeline_data["__pipeline_spec_dir"] = str(pipeline_path.parent)
     pipeline_data = resolve_template(pipeline_data, context, lenient=True)
     return cases_from_pipeline_def(pipeline_data, context, pipeline_path, lenient=True)
+
+
+def _minimal_context(pipeline_path: Path) -> dict[str, Any]:
+    """Build a minimal context when no bundle file is available."""
+    return {
+        "bundle": {"name": "default", "uuid": None, "target": "local"},
+        "var": {},
+        "resources": {},
+        "workspace": {"file_path": str(pipeline_path.parent)},
+    }
 
 
 def all_cases(
