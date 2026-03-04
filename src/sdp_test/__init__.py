@@ -12,12 +12,13 @@ from .spec_models import (
     TestCaseSpec,
     UnitSpec,
 )
-from .spec_runner import CaseResult, all_cases, case_id, find_spec_files, run_case
+from .spec_runner import CaseResult, all_cases, case_id, cases_from_spec, find_spec_files, run_case
 
 __all__ = [
     "CaseResult",
     "all_cases",
     "case_id",
+    "cases_from_spec",
     "dp",
     "find_spec_files",
     "load_bundle_context",

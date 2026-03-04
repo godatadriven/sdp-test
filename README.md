@@ -70,62 +70,33 @@ tests:
           customer_name: John Doe
 ```
 
-### 3. Wire up pytest
+### 3. Run tests
 
-Create `tests/conftest.py`:
-
-```python
-from typing import Generator
-
-import pytest
-from pyspark.sql import SparkSession
-
-
-@pytest.fixture(scope="session")
-def spark() -> Generator[SparkSession, None, None]:
-    session = (
-        SparkSession.builder
-        .master("local[2]")
-        .appName("pipeline-tests")
-        .config("spark.sql.shuffle.partitions", "1")
-        .getOrCreate()
-    )
-    session.sparkContext.setLogLevel("WARN")
-    yield session
-    session.stop()
-```
-
-Create `tests/test_pipelines.py`:
-
-```python
-from pathlib import Path
-
-import pytest
-from sdp_test import all_cases, case_id, run_case
-
-CASES = all_cases()
-
-
-@pytest.mark.parametrize(
-    "spec_file,case,_context",
-    CASES,
-    ids=[case_id(spec_file, case) for spec_file, case, _ in CASES],
-)
-def test_pipeline_specs(spark, spec_file: Path, case: dict, _context: dict):
-    result = run_case(spark, case)
-
-    assert result.left_minus_right == 0 and result.right_minus_left == 0, (
-        f"Test failed: {case.get('name')} from {spec_file}\n"
-        f"Unexpected rows: {result.left_minus_right}, Missing rows: {result.right_minus_left}\n"
-        f"Actual: {result.actual_rows}\n"
-        f"Expected: {result.expected_rows}"
-    )
-```
-
-### 4. Run tests
+That's it — no `conftest.py` or `test_*.py` needed. The pytest plugin auto-discovers your specs:
 
 ```bash
-pytest tests/
+pytest
+```
+
+The plugin automatically:
+- Finds all `*_pipeline_tests.yml` files in your project
+- Discovers colocated `*.unit_tests.yml` specs from your pipeline's library paths
+- Creates a local SparkSession and runs each test case
+- Reports results with clear failure messages
+
+### Configuration (optional)
+
+Configure via `pyproject.toml`:
+
+```toml
+[tool.sdp-test]
+bundle_file = "databricks.yml"   # default bundle file path
+```
+
+To disable the plugin (e.g. if you prefer the manual approach):
+
+```bash
+pytest -p no:sdp_test
 ```
 
 ## YAML Spec Format
@@ -188,6 +159,7 @@ from sdp_test import PipelineEntrySpec, UnitSpec, TestCaseSpec
 ### Key functions
 
 - `all_cases(search_dir, default_bundle_file)` — discover and load all test cases (recursively searches for `*_pipeline_tests.yml`)
+- `cases_from_spec(spec_path, default_bundle_file)` — process a single spec file, returns test cases
 - `run_case(spark, case)` — execute a single test case, returns `CaseResult`
 - `case_id(spec_file, case)` — format a test ID for pytest parametrization
 - `find_spec_files(search_dir)` — recursively find all `*_pipeline_tests.yml` files

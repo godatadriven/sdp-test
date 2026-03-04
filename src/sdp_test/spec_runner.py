@@ -52,65 +52,67 @@ def find_spec_files(search_dir: Path | None = None) -> list[Path]:
     return sorted(files)
 
 
+def cases_from_spec(
+    spec_path: Path,
+    default_bundle_file: Path | None = None,
+) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
+    """Process a single *_pipeline_tests.yml spec and return all test cases."""
+    pipeline_spec = PipelineEntrySpec.model_validate(load_pipeline_test_spec(str(spec_path)))
+    pipeline_spec_data = pipeline_spec.model_dump(exclude_none=True)
+    bundle_cfg = pipeline_spec_data.get("bundle") or {}
+    bundle_file = bundle_cfg.get("file") or (str(default_bundle_file) if default_bundle_file else "databricks.yml")
+    bundle_path = (
+        (spec_path.parent / bundle_file).resolve()
+        if not Path(bundle_file).is_absolute()
+        else Path(bundle_file)
+    )
+    bundle_target = bundle_cfg.get("target")
+    bundle_vars = bundle_cfg.get("variables") or {}
+    if bundle_path.exists():
+        context = load_bundle_context(str(bundle_path), target=bundle_target, variable_overrides=bundle_vars)
+    else:
+        context: dict[str, Any] = {
+            "bundle": {"name": "default", "uuid": None, "target": "local"},
+            "var": bundle_vars,
+            "resources": {},
+            "workspace": {"file_path": str(spec_path.parent.parent)},
+        }
+    pipeline_defaults, pipeline_def = _load_pipeline_defaults(spec_path, pipeline_spec_data, context)
+    defaults = {**pipeline_defaults, **resolve_template(pipeline_spec_data.get("defaults") or {}, context)}
+
+    cases: list[tuple[Path, dict[str, Any], dict[str, Any]]] = []
+    pipeline_log_level = _normalize_log_level(pipeline_spec_data.get("log_level"))
+    for test in pipeline_spec_data.get("tests") or []:
+        merged = {**defaults, **test}
+        merged_context = {**context, **defaults}
+        case = resolve_template(merged, merged_context)
+        case["__log_level"] = _normalize_log_level(case.get("log_level"), pipeline_log_level)
+        case["__spec_dir"] = str(spec_path.parent)
+        cases.append((spec_path, case, context))
+
+    for unit_spec_file in _discover_unit_spec_files(pipeline_def, context):
+        unit_spec = UnitSpec.model_validate(load_pipeline_test_spec(str(unit_spec_file)))
+        unit_spec_data = unit_spec.model_dump(exclude_none=True)
+        unit_log_level = _normalize_log_level(unit_spec_data.get("log_level"), pipeline_log_level)
+        for test in unit_spec_data.get("tests") or []:
+            merged = {**defaults, **test}
+            merged_context = {**context, **defaults}
+            case = resolve_template(merged, merged_context)
+            case["__log_level"] = _normalize_log_level(case.get("log_level"), unit_log_level)
+            case["__spec_dir"] = str(unit_spec_file.parent)
+            cases.append((unit_spec_file, case, context))
+    return cases
+
+
 def all_cases(
     search_dir: Path | None = None,
     default_bundle_file: Path | None = None,
 ) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
     if search_dir is None:
         search_dir = Path.cwd()
-    if default_bundle_file is None:
-        default_bundle_file = Path.cwd() / "databricks.yml"
-
     cases: list[tuple[Path, dict[str, Any], dict[str, Any]]] = []
-    for pipeline_spec_file in find_spec_files(search_dir):
-        pipeline_spec = PipelineEntrySpec.model_validate(load_pipeline_test_spec(str(pipeline_spec_file)))
-        pipeline_spec_data = pipeline_spec.model_dump(exclude_none=True)
-        bundle_cfg = pipeline_spec_data.get("bundle") or {}
-        bundle_file = bundle_cfg.get("file") or str(default_bundle_file)
-        bundle_path = (
-            (pipeline_spec_file.parent / bundle_file).resolve()
-            if not Path(bundle_file).is_absolute()
-            else Path(bundle_file)
-        )
-        bundle_target = bundle_cfg.get("target")
-        bundle_vars = bundle_cfg.get("variables") or {}
-        if bundle_path.exists():
-            context = load_bundle_context(str(bundle_path), target=bundle_target, variable_overrides=bundle_vars)
-        else:
-            # No bundle file — create a minimal context (open source SDP projects).
-            context: dict[str, Any] = {
-                "bundle": {"name": "default", "uuid": None, "target": "local"},
-                "var": bundle_vars,
-                "resources": {},
-                "workspace": {"file_path": str(pipeline_spec_file.parent.parent)},
-            }
-        pipeline_defaults, pipeline_def = _load_pipeline_defaults(pipeline_spec_file, pipeline_spec_data, context)
-        defaults = {**pipeline_defaults, **resolve_template(pipeline_spec_data.get("defaults") or {}, context)}
-
-        # Optional inline tests defined directly in the pipeline spec.
-        pipeline_log_level = _normalize_log_level(pipeline_spec_data.get("log_level"))
-        inline_tests = pipeline_spec_data.get("tests") or []
-        for test in inline_tests:
-            merged = {**defaults, **test}
-            merged_context = {**context, **defaults}
-            case = resolve_template(merged, merged_context)
-            case["__log_level"] = _normalize_log_level(case.get("log_level"), pipeline_log_level)
-            case["__spec_dir"] = str(pipeline_spec_file.parent)
-            cases.append((pipeline_spec_file, case, context))
-
-        # One-direction flow: discover colocated unit specs from the pipeline root path.
-        for unit_spec_file in _discover_unit_spec_files(pipeline_def, context):
-            unit_spec = UnitSpec.model_validate(load_pipeline_test_spec(str(unit_spec_file)))
-            unit_spec_data = unit_spec.model_dump(exclude_none=True)
-            unit_log_level = _normalize_log_level(unit_spec_data.get("log_level"), pipeline_log_level)
-            unit_tests = unit_spec_data.get("tests") or []
-            for test in unit_tests:
-                merged = {**defaults, **test}
-                merged_context = {**context, **defaults}
-                case = resolve_template(merged, merged_context)
-                case["__log_level"] = _normalize_log_level(case.get("log_level"), unit_log_level)
-                case["__spec_dir"] = str(unit_spec_file.parent)
-                cases.append((unit_spec_file, case, context))
+    for spec_file in find_spec_files(search_dir):
+        cases.extend(cases_from_spec(spec_file, default_bundle_file))
     return cases
 
 

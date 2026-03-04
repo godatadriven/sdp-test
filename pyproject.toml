@@ -31,6 +31,9 @@ databricks = [
     "pyspark[pipelines]>=4.1",
 ]
 
+[project.entry-points."pytest11"]
+sdp_test = "sdp_test.pytest_plugin"
+
 [project.urls]
 Homepage = "https://github.com/godatadriven/sdp-test"
 Repository = "https://github.com/godatadriven/sdp-test"
