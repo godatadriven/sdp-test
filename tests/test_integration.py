@@ -1,6 +1,6 @@
 """Integration tests exercising the full sdp-test flow with open source PySpark.
 
-These tests create a complete mini-project on disk (bundle, pipeline config,
+These tests create complete mini-projects on disk (bundle, pipeline config,
 SQL/Python models, and YAML test specs) and run the full discovery → execution
 → assertion pipeline using a local Spark session.
 """
@@ -474,3 +474,398 @@ tests:
         result = run_case(spark, cases[0][1])
         assert result.left_minus_right == 0
         assert result.right_minus_left == 0
+
+
+def _create_lakeflow_project(tmp_path: Path) -> Path:
+    """Scaffold a Databricks Lakeflow-style project with bronze/silver/gold layers.
+
+    This mirrors the jaffle_shop pattern from lakeflow-foundation with:
+    - Multi-layer SQL transformations (bronze → silver → gold)
+    - Python models using @dp.table decorators
+    - Schema variables resolved from bundle configuration
+    - Multiple input tables with joins
+    - Type coercion (dates, decimals, booleans)
+    """
+
+    # databricks.yml
+    (tmp_path / "databricks.yml").write_text(
+        """
+bundle:
+  name: jaffle_shop
+
+variables:
+  catalog:
+    default: jaffle_catalog
+
+include:
+  - "resources/*.yml"
+"""
+    )
+
+    # resources/
+    resources = tmp_path / "resources"
+    resources.mkdir()
+
+    (resources / "schemas.yml").write_text(
+        """
+resources:
+  schemas:
+    jaffle_bronze:
+      name: jaffle_shop_bronze
+    jaffle_silver:
+      name: jaffle_shop_silver
+    jaffle_gold:
+      name: jaffle_shop_gold
+"""
+    )
+
+    (resources / "pipeline.yml").write_text(
+        """
+resources:
+  pipelines:
+    jaffle_shop:
+      name: jaffle_shop
+      catalog: ${var.catalog}
+      schema: ${resources.schemas.jaffle_gold.name}
+      configuration:
+        bronze_schema: ${resources.schemas.jaffle_bronze.name}
+        silver_schema: ${resources.schemas.jaffle_silver.name}
+        gold_schema: ${resources.schemas.jaffle_gold.name}
+      libraries:
+        - glob:
+            include: ../src/jaffle_shop/transformations/**
+"""
+    )
+
+    # --- Silver layer: SQL models ---
+    silver_dir = tmp_path / "src" / "jaffle_shop" / "transformations" / "silver"
+    silver_dir.mkdir(parents=True)
+
+    # stg_locations.sql — Silver location model (date truncation, type casting)
+    (silver_dir / "stg_locations.sql").write_text(
+        """
+CREATE OR REFRESH MATERIALIZED VIEW ${silver_schema}.stg_locations
+(
+    location_id STRING NOT NULL PRIMARY KEY RELY COMMENT 'Canonical location identifier.',
+    location_name STRING COMMENT 'Cleaned location name.',
+    tax_rate DOUBLE COMMENT 'Location tax rate as numeric value.',
+    opened_date DATE COMMENT 'Store opening date.'
+)
+COMMENT 'Locations with basic cleaning applied, one row per location.'
+TBLPROPERTIES (
+    'layer' = 'silver',
+    'dbt_model' = 'stg_locations'
+)
+CLUSTER BY AUTO
+AS
+SELECT
+    CAST(id AS STRING) AS location_id,
+    CAST(name AS STRING) AS location_name,
+    CAST(tax_rate AS DOUBLE) AS tax_rate,
+    CAST(TO_DATE(opened_at) AS DATE) AS opened_date
+FROM ${bronze_schema}.raw_stores;
+"""
+    )
+
+    # stg_locations unit tests
+    (silver_dir / "stg_locations.unit_tests.yml").write_text(
+        """
+tests:
+  - name: truncates_opened_at_to_date
+    model: stg_locations.sql
+    given:
+      - table: ${bronze_schema}.raw_stores
+        rows:
+          - id: "1"
+            name: Vice City
+            tax_rate: 0.2
+            opened_at: "2016-09-01T00:00:00"
+          - id: "2"
+            name: San Andreas
+            tax_rate: 0.1
+            opened_at: "2079-10-27T23:59:59.9999"
+    expect:
+      rows:
+        - location_id: "1"
+          location_name: Vice City
+          tax_rate: 0.2
+          opened_date: "2016-09-01"
+        - location_id: "2"
+          location_name: San Andreas
+          tax_rate: 0.1
+          opened_date: "2079-10-27"
+"""
+    )
+
+    # --- Silver layer: Python model (using @dp.table decorator) ---
+
+    # stg_products.py — Python model with @dp.table decorator
+    (silver_dir / "stg_products.py").write_text(
+        """
+from pyspark import pipelines as dp
+from pyspark.sql import SparkSession, functions as F
+
+spark = SparkSession.getActiveSession() or SparkSession.builder.getOrCreate()
+BRONZE_SCHEMA = spark.conf.get("bronze_schema", "jaffle_shop_bronze")
+SILVER_SCHEMA = spark.conf.get("silver_schema", "jaffle_shop_silver")
+
+
+@dp.table(
+    cluster_by_auto=True,
+    name=f"{SILVER_SCHEMA}.stg_products",
+    comment="Product data with cleaning and transformation, one row per product.",
+    table_properties={"layer": "silver", "dbt_model": "stg_products"},
+)
+def stg_products():
+    return spark.read.table(f"{BRONZE_SCHEMA}.raw_products").select(
+        F.col("sku").cast("string").alias("product_id"),
+        F.col("name").cast("string").alias("product_name"),
+        F.col("type").cast("string").alias("product_type"),
+        F.round(F.col("price").cast("double") / F.lit(100), 2).cast("decimal(16,2)").alias("product_price"),
+        F.coalesce((F.col("type") == F.lit("jaffle")), F.lit(False)).cast("boolean").alias("is_food_item"),
+        F.coalesce((F.col("type") == F.lit("beverage")), F.lit(False)).cast("boolean").alias("is_drink_item"),
+    )
+"""
+    )
+
+    # stg_products unit tests
+    (silver_dir / "stg_products.unit_tests.yml").write_text(
+        """
+tests:
+  - name: maps_product_type_flags_and_price
+    model: stg_products.py
+    given:
+      - table: ${bronze_schema}.raw_products
+        rows:
+          - sku: "1"
+            name: Veggie Jaffle
+            type: jaffle
+            price: "900"
+          - sku: "2"
+            name: Cola
+            type: beverage
+            price: "350"
+          - sku: "3"
+            name: Mystery Item
+            type: merch
+            price: "1299"
+    expect:
+      rows:
+        - product_id: "1"
+          product_price: 9.00
+          is_food_item: true
+          is_drink_item: false
+        - product_id: "2"
+          product_price: 3.50
+          is_food_item: false
+          is_drink_item: true
+        - product_id: "3"
+          product_price: 12.99
+          is_food_item: false
+          is_drink_item: false
+"""
+    )
+
+    # --- Gold layer: SQL model with joins and aggregation ---
+    gold_dir = tmp_path / "src" / "jaffle_shop" / "transformations" / "gold"
+    gold_dir.mkdir(parents=True)
+
+    # order_items.sql — Gold model joining products with order items and computing supply costs
+    (gold_dir / "order_items.sql").write_text(
+        """
+CREATE OR REFRESH MATERIALIZED VIEW ${gold_schema}.order_items
+(
+    order_item_id STRING NOT NULL PRIMARY KEY RELY,
+    order_id BIGINT,
+    product_id BIGINT,
+    product_name STRING,
+    product_price DECIMAL(16,2),
+    supply_cost DECIMAL(38,2),
+    is_food_item BOOLEAN,
+    is_drink_item BOOLEAN
+)
+COMMENT 'Order items enriched with product details and aggregated supply costs.'
+TBLPROPERTIES ('layer' = 'gold')
+CLUSTER BY AUTO
+AS
+WITH supply_costs AS (
+    SELECT
+        product_id,
+        CAST(SUM(supply_cost) AS DECIMAL(38,2)) AS supply_cost
+    FROM ${silver_schema}.stg_supplies
+    GROUP BY product_id
+)
+SELECT
+    CAST(oi.order_item_id AS STRING) AS order_item_id,
+    oi.order_id,
+    oi.product_id,
+    p.product_name,
+    p.product_price,
+    sc.supply_cost,
+    p.is_food_item,
+    p.is_drink_item
+FROM ${silver_schema}.stg_order_items oi
+JOIN ${silver_schema}.stg_products p ON oi.product_id = p.product_id
+LEFT JOIN supply_costs sc ON oi.product_id = sc.product_id;
+"""
+    )
+
+    # order_items unit tests
+    (gold_dir / "order_items.unit_tests.yml").write_text(
+        """
+tests:
+  - name: supply_costs_sum_correctly
+    model: order_items.sql
+    given:
+      - table: ${silver_schema}.stg_supplies
+        rows:
+          - product_id: 1
+            supply_cost: 4.50
+          - product_id: 2
+            supply_cost: 3.50
+          - product_id: 2
+            supply_cost: 5.00
+      - table: ${silver_schema}.stg_products
+        rows:
+          - product_id: 1
+            product_name: Veggie Jaffle
+            product_price: 9.00
+            is_food_item: true
+            is_drink_item: false
+          - product_id: 2
+            product_name: Cola
+            product_price: 3.50
+            is_food_item: false
+            is_drink_item: true
+      - table: ${silver_schema}.stg_order_items
+        rows:
+          - order_item_id: 1
+            order_id: 1
+            product_id: 1
+          - order_item_id: 2
+            order_id: 2
+            product_id: 2
+      - table: ${silver_schema}.stg_orders
+        rows:
+          - order_id: 1
+            ordered_at: "2024-01-01T00:00:00"
+          - order_id: 2
+            ordered_at: "2024-01-02T00:00:00"
+    expect:
+      rows:
+        - order_item_id: "1"
+          order_id: 1
+          product_id: 1
+          supply_cost: 4.50
+        - order_item_id: "2"
+          order_id: 2
+          product_id: 2
+          supply_cost: 8.50
+"""
+    )
+
+    # Pipeline test entry spec
+    pipeline_tests = tmp_path / "pipeline_tests"
+    pipeline_tests.mkdir()
+
+    (pipeline_tests / "jaffle_shop_pipeline_tests.yml").write_text(
+        """
+suite: jaffle_shop_pipeline_tests
+log_level: DEBUG
+
+bundle:
+  file: ../databricks.yml
+  variables:
+    catalog: jaffle_catalog
+
+pipeline: pipelines.jaffle_shop
+"""
+    )
+
+    return tmp_path
+
+
+class TestLakeflowJaffleShop:
+    """End-to-end tests modeled after the jaffle_shop Lakeflow Declarative Pipeline.
+
+    Covers:
+    - Multi-layer transformations (bronze → silver → gold)
+    - SQL models with CLUSTER BY AUTO, type casting, date truncation
+    - Python models using @dp.table decorators (shimmed for local testing)
+    - Gold-layer joins across multiple silver tables
+    - Aggregated supply costs
+    - Template variable resolution from bundle configuration
+    - Boolean flag computation
+    - Decimal type coercion
+    """
+
+    def test_discovers_all_jaffle_shop_specs(self, tmp_path: Path) -> None:
+        project = _create_lakeflow_project(tmp_path)
+        cases = all_cases(
+            pipeline_tests_dir=project / "pipeline_tests",
+            default_bundle_file=project / "databricks.yml",
+        )
+
+        # 1 SQL silver + 1 Python silver + 1 SQL gold = 3
+        assert len(cases) == 3
+        names = sorted(case.get("name", "unnamed") for _, case, _ in cases)
+        assert names == [
+            "maps_product_type_flags_and_price",
+            "supply_costs_sum_correctly",
+            "truncates_opened_at_to_date",
+        ]
+
+    def test_schema_variables_resolved_from_bundle(self, tmp_path: Path) -> None:
+        project = _create_lakeflow_project(tmp_path)
+        cases = all_cases(
+            pipeline_tests_dir=project / "pipeline_tests",
+            default_bundle_file=project / "databricks.yml",
+        )
+
+        for _, case, _ in cases:
+            assert case["bronze_schema"] == "jaffle_shop_bronze"
+            assert case["silver_schema"] == "jaffle_shop_silver"
+            assert case["gold_schema"] == "jaffle_shop_gold"
+            assert case["catalog"] == "jaffle_catalog"
+
+    def test_silver_sql_stg_locations(self, spark, tmp_path: Path) -> None:
+        """Test silver SQL model: date truncation and type casting."""
+        project = _create_lakeflow_project(tmp_path)
+        cases = all_cases(
+            pipeline_tests_dir=project / "pipeline_tests",
+            default_bundle_file=project / "databricks.yml",
+        )
+
+        stg_locations = [c for _, c, _ in cases if c.get("name") == "truncates_opened_at_to_date"]
+        assert len(stg_locations) == 1
+
+        result = run_case(spark, stg_locations[0])
+        assert result.left_minus_right == 0 and result.right_minus_left == 0
+
+    def test_silver_python_stg_products(self, spark, tmp_path: Path) -> None:
+        """Test Python model with @dp.table decorator, price conversion, boolean flags."""
+        project = _create_lakeflow_project(tmp_path)
+        cases = all_cases(
+            pipeline_tests_dir=project / "pipeline_tests",
+            default_bundle_file=project / "databricks.yml",
+        )
+
+        stg_products = [c for _, c, _ in cases if c.get("name") == "maps_product_type_flags_and_price"]
+        assert len(stg_products) == 1
+
+        result = run_case(spark, stg_products[0])
+        assert result.left_minus_right == 0 and result.right_minus_left == 0
+
+    def test_gold_sql_order_items_with_joins(self, spark, tmp_path: Path) -> None:
+        """Test gold SQL model: multi-table joins and aggregated supply costs."""
+        project = _create_lakeflow_project(tmp_path)
+        cases = all_cases(
+            pipeline_tests_dir=project / "pipeline_tests",
+            default_bundle_file=project / "databricks.yml",
+        )
+
+        order_items = [c for _, c, _ in cases if c.get("name") == "supply_costs_sum_correctly"]
+        assert len(order_items) == 1
+
+        result = run_case(spark, order_items[0])
+        assert result.left_minus_right == 0 and result.right_minus_left == 0

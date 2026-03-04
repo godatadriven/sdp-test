@@ -10,10 +10,23 @@ from pyspark.sql import DataFrame, SparkSession
 
 
 def _model_query(sql_text: str) -> str:
-    """Extract the query after CLUSTER BY AUTO AS from a Lakeflow model SQL file."""
-    match = re.search(r"\bCLUSTER BY AUTO\s+AS\s", sql_text, flags=re.IGNORECASE)
+    """Extract the SELECT query from a Lakeflow/DDL model SQL file.
+
+    Tries the following patterns in order:
+    1. ``CLUSTER BY AUTO AS <query>`` (Lakeflow Declarative Pipeline style)
+    2. ``CLUSTER BY (...) AS <query>`` (explicit clustering)
+    3. Final top-level ``AS`` preceding the SELECT query in a CREATE ... VIEW/TABLE statement
+    """
+    # Try CLUSTER BY AUTO AS first (most common in Lakeflow).
+    match = re.search(r"\bCLUSTER\s+BY\s+AUTO\s+AS\s", sql_text, flags=re.IGNORECASE)
     if not match:
-        raise ValueError("Could not find 'CLUSTER BY AUTO AS' section in model SQL")
+        # Try CLUSTER BY (...) AS.
+        match = re.search(r"\bCLUSTER\s+BY\s+[^;]+?\bAS\s", sql_text, flags=re.IGNORECASE)
+    if not match:
+        # Fallback: find the last top-level AS before a SELECT/WITH in a CREATE statement.
+        match = re.search(r"\bAS\s+(?=(?:SELECT|WITH)\b)", sql_text, flags=re.IGNORECASE)
+    if not match:
+        raise ValueError("Could not find a query body (AS SELECT/WITH) in model SQL")
     query = sql_text[match.end() :].strip()
     if query.endswith(";"):
         query = query[:-1]
