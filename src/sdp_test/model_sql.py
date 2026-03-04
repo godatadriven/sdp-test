@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -12,8 +10,6 @@ from pyspark.sql import DataFrame, SparkSession
 def _model_query(sql_text: str) -> str:
     """Extract the SELECT query from a Lakeflow/DDL model SQL file.
     """
-    # Try CLUSTER BY AUTO AS first (most common in Lakeflow).
-
     match = re.search(r"\bAS\s+(?=(?:SELECT|WITH)\b)", sql_text, flags=re.IGNORECASE)
     if not match:
         raise ValueError("Could not find a query body (AS SELECT/WITH) in model SQL")
@@ -33,10 +29,8 @@ def render_model_query(model_path: str, schema_map: dict[str, str]) -> str:
 def register_df_as_view(spark: SparkSession, df: DataFrame, schema_name: str, table_name: str) -> None:
     """Register a dataframe as a real table <schema>.<table> for SQL model execution."""
     spark.sql(f"CREATE DATABASE IF NOT EXISTS {schema_name}")
-    os.makedirs(".tmp_spark_tables", exist_ok=True)
-    temp_path = tempfile.mkdtemp(prefix=f"{schema_name}_{table_name}_", dir=".tmp_spark_tables")
     spark.sql(f"DROP TABLE IF EXISTS {schema_name}.{table_name}")
-    (df.write.mode("overwrite").option("path", temp_path).saveAsTable(f"{schema_name}.{table_name}"))
+    df.write.mode("overwrite").saveAsTable(f"{schema_name}.{table_name}")
 
 
 def rows_as_dicts(df: DataFrame, columns: list[str]) -> list[dict[str, Any]]:

@@ -1,14 +1,14 @@
 [project]
 name = "sdp-test"
 version = "0.1.0"
-description = "Declarative unit testing framework for Spark Declarative Pipelines (Databricks Lakeflow)"
+description = "Declarative unit testing for Spark Declarative Pipelines (SDP) and Lakeflow Declarative Pipelines (LDP)"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [
-    { name = "GoDataDriven", email = "info@godatadriven.com" },
+    { name = "Daniël Tom", email = "daniel.tom@xebia.com" },
 ]
-keywords = ["databricks", "lakeflow", "spark", "testing", "pipelines", "declarative"]
+keywords = ["spark", "testing", "pipelines", "declarative", "declarative pipelines", "sdp", "unit testing", "test framework", "pytest", "databricks", "lakeflow"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -17,17 +17,18 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Testing",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
     "pyyaml",
     "pydantic>=2.10.0",
-    "pyspark>=4.1",
 ]
 
 [project.optional-dependencies]
-databricks = [
+spark = [
     "pyspark[pipelines]>=4.1",
 ]
 
@@ -44,6 +45,7 @@ dev = [
     "pytest",
     "ruff",
     "pre-commit>=4.0",
+    "pytest-cov>=7.0.0",
 ]
 
 [build-system]

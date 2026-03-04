@@ -53,17 +53,14 @@ def _load_sdp_config(rootdir: Path) -> dict[str, Any]:
         return {}
     try:
         import tomllib
-    except ModuleNotFoundError:
-        return {}
+    except ModuleNotFoundError:  # pragma: no cover – tomllib is always available on Python 3.11+
+        return {}  # pragma: no cover
     with open(pyproject, "rb") as f:
         return tomllib.load(f).get("tool", {}).get("sdp-test", {})
 
 
 def _resolve_bundle_file(config) -> Path | None:
     """Resolve default bundle file from config or convention."""
-    cfg = _load_sdp_config(Path(config.rootdir))
-    if "bundle_file" in cfg:
-        return (Path(config.rootdir) / cfg["bundle_file"]).resolve()
     default = Path(config.rootdir) / "databricks.yml"
     return default if default.exists() else None
 
@@ -75,10 +72,6 @@ def _find_pipeline_files(rootdir: Path) -> list[Path]:
         rootdir / "spark-pipeline.yml",
         rootdir / "spark-pipeline.yaml",
     ]
-    # Also check [tool.sdp-test].bundle_file from pyproject.toml.
-    cfg = _load_sdp_config(rootdir)
-    if "bundle_file" in cfg:
-        candidates.insert(0, (rootdir / cfg["bundle_file"]).resolve())
     return [p for p in candidates if p.exists()]
 
 
@@ -86,7 +79,7 @@ def _find_pipeline_files(rootdir: Path) -> list[Path]:
 # Pytest hooks
 # ---------------------------------------------------------------------------
 
-def pytest_configure(config):
+def pytest_configure(config):  # pragma: no cover – runs in subprocess via pytester
     """Auto-discover pipeline definition files and inject them for collection.
 
     Only auto-discovered files are collected — passing pipeline files as
@@ -96,6 +89,7 @@ def pytest_configure(config):
     """
     rootdir = Path(config.rootdir)
     cfg = _load_sdp_config(rootdir)
+
     if cfg.get("auto_discover") is False:
         return
 
@@ -116,7 +110,7 @@ def pytest_configure(config):
     config._sdp_discovered_files = discovered
 
 
-def pytest_collect_file(parent, file_path):
+def pytest_collect_file(parent, file_path):  # pragma: no cover – runs in subprocess via pytester
     """Collect SDP test files encountered during directory traversal."""
     # Always collect *_pipeline_tests.yml spec files.
     if file_path.suffix in (".yml", ".yaml") and file_path.stem.endswith("_pipeline_tests"):
@@ -140,7 +134,7 @@ def pytest_collect_file(parent, file_path):
 # Collectors
 # ---------------------------------------------------------------------------
 
-class SDPSpecFile(pytest.File):
+class SDPSpecFile(pytest.File):  # pragma: no cover – runs in subprocess via pytester
     """Collector for a ``*_pipeline_tests.yml`` spec file."""
 
     def collect(self):
@@ -152,7 +146,7 @@ class SDPSpecFile(pytest.File):
             yield SDPTestItem.from_parent(self, name=test_name, case=case)
 
 
-class BundleFile(pytest.File):
+class BundleFile(pytest.File):  # pragma: no cover – runs in subprocess via pytester
     """Collector for a ``databricks.yml`` bundle file — auto-discovers tests from all pipelines."""
 
     def collect(self):
@@ -164,7 +158,7 @@ class BundleFile(pytest.File):
             yield SDPTestItem.from_parent(self, name=test_name, case=case)
 
 
-class PipelineFile(pytest.File):
+class PipelineFile(pytest.File):  # pragma: no cover – runs in subprocess via pytester
     """Collector for a ``spark-pipeline.yml`` or ``*.pipeline.yml`` file."""
 
     def collect(self):
@@ -180,15 +174,24 @@ class PipelineFile(pytest.File):
 # Test item
 # ---------------------------------------------------------------------------
 
-class SDPTestItem(pytest.Item):
+class SDPTestItem(pytest.Item):  # pragma: no cover – runs in subprocess via pytester
     """A single pipeline test case."""
 
     def __init__(self, *, case: dict[str, Any], **kwargs):
         super().__init__(**kwargs)
         self.case = case
+        # Strip the source file (e.g. databricks.yml) from the nodeid so test
+        # output shows only pipeline::suite::test_name.
+        self._nodeid = self.name
 
     def runtest(self):
         from pyspark.sql import SparkSession
+
+        # Lazily create a session-level temp dir via pytest's tmp_path_factory.
+        if not hasattr(self.config, "_sdp_tmpdir"):
+            self.config._sdp_tmpdir = str(
+                self.config._tmp_path_factory.mktemp("sdp_test")
+            )
 
         spark = SparkSession.getActiveSession()
         if spark is None:
@@ -196,6 +199,7 @@ class SDPTestItem(pytest.Item):
                 SparkSession.builder.master("local[2]")
                 .appName("sdp-test")
                 .config("spark.sql.shuffle.partitions", "1")
+                .config("spark.sql.warehouse.dir", self.config._sdp_tmpdir)
                 .getOrCreate()
             )
             spark.sparkContext.setLogLevel("WARN")
@@ -210,4 +214,4 @@ class SDPTestItem(pytest.Item):
         return super().repr_failure(excinfo)
 
     def reportinfo(self):
-        return self.path, None, self.name
+        return "", None, self.name

@@ -9,12 +9,14 @@ from pyspark.sql import SparkSession
 
 
 @pytest.fixture(scope="session")
-def spark() -> Generator[SparkSession, None, None]:
+def spark(tmp_path_factory) -> Generator[SparkSession, None, None]:
     """Provide a local SparkSession fixture for tests."""
+    warehouse_dir = str(tmp_path_factory.mktemp("spark_warehouse"))
     spark_session = (
         SparkSession.builder.master("local[2]")
         .appName("sdp-test-tests")
         .config("spark.sql.shuffle.partitions", "1")
+        .config("spark.sql.warehouse.dir", warehouse_dir)
         .getOrCreate()
     )
     spark_session.sparkContext.setLogLevel("WARN")

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from sdp_test.bundle import resolve_template, load_bundle_context
+import pytest
+from sdp_test.bundle import resolve_template, load_bundle_context, _deep_merge, _lookup_path
 
 
 def test_resolve_template_simple() -> None:
@@ -84,3 +85,47 @@ variables:
     context = load_bundle_context(str(bundle_file), variable_overrides={"catalog": "override_catalog"})
 
     assert context["var"]["catalog"] == "override_catalog"
+
+
+def test_deep_merge_nested_dicts() -> None:
+    base = {"a": {"x": 1, "y": 2}}
+    incoming = {"a": {"y": 3, "z": 4}}
+    result = _deep_merge(base, incoming)
+    assert result == {"a": {"x": 1, "y": 3, "z": 4}}
+
+
+def test_lookup_path_unknown_raises_key_error() -> None:
+    with pytest.raises(KeyError, match="Unknown placeholder path"):
+        _lookup_path({"a": 1}, "a.b.c")
+
+
+def test_resolve_template_lenient_keeps_unknown_placeholder() -> None:
+    result = resolve_template("${missing.var}", {}, lenient=True)
+    assert result == "${missing.var}"
+
+
+def test_resolve_template_raises_on_non_scalar() -> None:
+    with pytest.raises(ValueError, match="Cannot interpolate non-scalar"):
+        resolve_template("${nested}", {"nested": {"a": 1}})
+
+
+def test_resolve_template_raises_on_unknown_placeholder() -> None:
+    with pytest.raises(KeyError, match="Unknown placeholder path"):
+        resolve_template("${missing.var}", {})
+
+
+def test_load_bundle_context_plain_variable(tmp_path) -> None:
+    """Test bundle with a plain string variable (not a dict with 'default')."""
+    bundle_file = tmp_path / "databricks.yml"
+    bundle_file.write_text(
+        """
+bundle:
+  name: test_bundle
+
+variables:
+  region: us-east-1
+"""
+    )
+
+    context = load_bundle_context(str(bundle_file))
+    assert context["var"]["region"] == "us-east-1"
