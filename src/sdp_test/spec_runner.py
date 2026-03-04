@@ -238,8 +238,16 @@ def run_case(spark, case: dict[str, Any]) -> CaseResult:
         if "." not in table:
             raise ValueError(f"Given input table must be schema-qualified: {table}")
         schema_name, table_name = table.split(".", 1)
-        df = spark.createDataFrame(rows)
-        register_df_as_view(spark, df, schema_name, table_name)
+        if not rows:
+            # Spark cannot infer schema from an empty list.  Create a stub table
+            # so SQL JOINs can reference it; the auto-missing-columns logic will
+            # add any columns the query needs.
+            spark.sql(f"CREATE DATABASE IF NOT EXISTS {schema_name}")
+            spark.sql(f"DROP TABLE IF EXISTS {schema_name}.{table_name}")
+            spark.sql(f"CREATE TABLE {schema_name}.{table_name} (_placeholder STRING)")
+        else:
+            df = spark.createDataFrame(rows)
+            register_df_as_view(spark, df, schema_name, table_name)
         registered_tables.add(f"{schema_name}.{table_name}")
 
     model_path = _model_path(case)
