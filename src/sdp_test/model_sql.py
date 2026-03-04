@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from pyspark.sql import DataFrame, SparkSession
+if TYPE_CHECKING:
+    from pyspark.sql import DataFrame, SparkSession
 
 
 def _model_query(sql_text: str) -> str:

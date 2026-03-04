@@ -13,7 +13,6 @@ from typing import Any
 import uuid
 
 import yaml
-from pyspark.sql.types import DateType, DecimalType, StringType, StructField, StructType, TimestampType
 
 from .bundle import load_bundle_context, load_pipeline_test_spec, resolve_template
 from .model_sql import register_df_as_view, render_model_query
@@ -219,6 +218,8 @@ def _create_df_with_fallback_schema(spark, rows: list[dict[str, Any]]):
     This helper catches the ``CANNOT_DETERMINE_TYPE`` error and retries with an
     explicit schema that defaults null-only columns to ``StringType``.
     """
+    from pyspark.sql.types import StringType, StructField, StructType
+
     try:
         return spark.createDataFrame(rows)
     except Exception:  # noqa: BLE001
@@ -549,6 +550,8 @@ def _run_query_with_auto_missing_columns(spark, query: str, registered_tables: s
 
 
 def _coerce_value_to_field(value: Any, field) -> Any:
+    from pyspark.sql.types import DateType, DecimalType, TimestampType
+
     if value is None:
         return None
     if isinstance(field.dataType, DecimalType):
