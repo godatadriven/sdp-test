@@ -1,18 +1,17 @@
 """Pytest plugin for automatic SDP test collection.
 
 Registers as a pytest plugin via the ``pytest11`` entry point. When installed,
-tests are discovered automatically from pipeline definitions — no conftest.py,
-test_*.py, or pipeline test spec needed.
+tests are discovered automatically from pipeline definitions — no conftest.py
+or test_*.py boilerplate required.
 
-Discovery order:
-    1. ``databricks.yml`` in the project root — discovers tests from all pipelines
-    2. ``spark-pipeline.yml`` anywhere in the scanned tree
-    3. ``*_pipeline_tests.yml`` spec files anywhere in the scanned tree
+The plugin collects tests from three file types:
+    - ``databricks.yml``           — Databricks Asset Bundle (all pipelines)
+    - ``spark-pipeline.yml``       — open source Spark Declarative Pipeline
+    - ``*_pipeline_tests.yml``     — explicit pipeline test spec
 
-The ``databricks.yml`` path can be customised in ``pyproject.toml``:
-
-    [tool.sdp-test]
-    bundle_file = "path/to/databricks.yml"
+Auto-discovery: when a ``databricks.yml`` exists in the project root, the
+plugin automatically includes it in pytest's collection — even when
+``testpaths`` points elsewhere.  No configuration needed.
 
 Disable with ``pytest -p no:sdp_test`` if you prefer the manual approach.
 """
@@ -73,35 +72,44 @@ def _resolve_bundle_file(config) -> Path | None:
 # Pytest hooks
 # ---------------------------------------------------------------------------
 
+def _find_pipeline_files(rootdir: Path) -> list[Path]:
+    """Find pipeline definition files in the project root."""
+    candidates = [
+        rootdir / "databricks.yml",
+        rootdir / "spark-pipeline.yml",
+        rootdir / "spark-pipeline.yaml",
+    ]
+    # Also check [tool.sdp-test].bundle_file from pyproject.toml.
+    cfg = _load_sdp_config(rootdir)
+    if "bundle_file" in cfg:
+        candidates.insert(0, (rootdir / cfg["bundle_file"]).resolve())
+    return [p for p in candidates if p.exists()]
+
+
 def pytest_configure(config):
-    """Ensure the root bundle file is included in pytest's collection paths.
+    """Ensure pipeline definition files are included in pytest's collection.
 
     When ``testpaths`` restricts scanning to a subdirectory (e.g. ``tests/``),
     pytest never visits the project root so ``pytest_collect_file`` never sees
-    ``databricks.yml``.  This hook adds the bundle file as an explicit argument
-    so that auto-discovery just works with a bare ``pytest``.
+    ``databricks.yml`` or ``spark-pipeline.yml``.  This hook adds any pipeline
+    definition files found in the project root as extra collection arguments
+    so that a bare ``pytest`` just works.
     """
-    # Only inject when the user ran a bare ``pytest`` (no explicit file args).
-    # config.args contains the resolved initial arguments; when the user passes
-    # nothing, pytest fills it from testpaths/rootdir.  We detect this by
-    # checking whether any arg points to a .yml file that we would collect.
-    if config.args and any(
-        Path(a).suffix in (".yml", ".yaml") and (
-            Path(a).stem.endswith("_pipeline_tests")
-            or Path(a).name == "databricks.yml"
-            or Path(a).name.startswith("spark-pipeline")
-        )
-        for a in config.args
-    ):
-        return
+    rootdir = Path(config.rootdir)
+    resolved_args: set[Path] = set()
+    for arg in config.args:
+        try:
+            resolved_args.add(Path(arg).resolve())
+        except (OSError, ValueError):
+            pass
 
-    bundle_path = _resolve_bundle_file(config)
-    if bundle_path is not None and bundle_path.exists():
-        config.args.append(str(bundle_path))
+    for pipeline_file in _find_pipeline_files(rootdir):
+        if pipeline_file.resolve() not in resolved_args:
+            config.args.append(str(pipeline_file))
 
 
 def pytest_collect_file(parent, file_path):
-    """Collect SDP test files encountered during normal directory traversal."""
+    """Collect SDP test files encountered during directory traversal."""
     if file_path.suffix in (".yml", ".yaml") and file_path.stem.endswith("_pipeline_tests"):
         return SDPSpecFile.from_parent(parent, path=file_path)
     if file_path.name == "databricks.yml":

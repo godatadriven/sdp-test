@@ -456,9 +456,11 @@ pytest spark-pipeline.yml
 
 ### pyproject.toml
 
+Point to a custom bundle file location (default: `databricks.yml` in project root):
+
 ```toml
 [tool.sdp-test]
-bundle_file = "databricks.yml"   # default bundle file path
+bundle_file = "path/to/databricks.yml"
 ```
 
 ### Disabling the plugin
