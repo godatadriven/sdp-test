@@ -31,7 +31,7 @@ uv add sdp-test --dev
 
 ### 1. Create a pipeline test spec
 
-Create `pipeline_tests/my_pipeline_tests.yml`:
+Create a pipeline test spec anywhere in your project (e.g. `tests/my_pipeline_tests.yml`):
 
 ```yaml
 suite: my_pipeline_tests
@@ -187,10 +187,10 @@ from sdp_test import PipelineEntrySpec, UnitSpec, TestCaseSpec
 
 ### Key functions
 
-- `all_cases(pipeline_tests_dir, default_bundle_file)` — discover and load all test cases
+- `all_cases(search_dir, default_bundle_file)` — discover and load all test cases (recursively searches for `*_pipeline_tests.yml`)
 - `run_case(spark, case)` — execute a single test case, returns `CaseResult`
 - `case_id(spec_file, case)` — format a test ID for pytest parametrization
-- `find_spec_files(pipeline_tests_dir)` — find all `*_pipeline_tests.yml` files
+- `find_spec_files(search_dir)` — recursively find all `*_pipeline_tests.yml` files
 - `load_bundle_context(bundle_file, target, variable_overrides)` — load bundle configuration
 
 ## Development

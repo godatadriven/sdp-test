@@ -203,7 +203,7 @@ class TestFullDiscoveryAndExecution:
     def test_all_cases_discovers_all_specs(self, tmp_path: Path) -> None:
         project = _create_project(tmp_path)
         cases = all_cases(
-            pipeline_tests_dir=project / "pipeline_tests",
+            search_dir=project / "pipeline_tests",
             default_bundle_file=project / "databricks.yml",
         )
 
@@ -215,7 +215,7 @@ class TestFullDiscoveryAndExecution:
     def test_case_ids_are_formatted(self, tmp_path: Path) -> None:
         project = _create_project(tmp_path)
         cases = all_cases(
-            pipeline_tests_dir=project / "pipeline_tests",
+            search_dir=project / "pipeline_tests",
             default_bundle_file=project / "databricks.yml",
         )
 
@@ -225,7 +225,7 @@ class TestFullDiscoveryAndExecution:
     def test_sql_model_tests_pass(self, spark, tmp_path: Path) -> None:
         project = _create_project(tmp_path)
         cases = all_cases(
-            pipeline_tests_dir=project / "pipeline_tests",
+            search_dir=project / "pipeline_tests",
             default_bundle_file=project / "databricks.yml",
         )
 
@@ -242,7 +242,7 @@ class TestFullDiscoveryAndExecution:
     def test_python_model_tests_pass(self, spark, tmp_path: Path) -> None:
         project = _create_project(tmp_path)
         cases = all_cases(
-            pipeline_tests_dir=project / "pipeline_tests",
+            search_dir=project / "pipeline_tests",
             default_bundle_file=project / "databricks.yml",
         )
 
@@ -307,7 +307,7 @@ class TestBundleVariableResolution:
     def test_schema_variables_are_resolved(self, tmp_path: Path) -> None:
         project = _create_project(tmp_path)
         cases = all_cases(
-            pipeline_tests_dir=project / "pipeline_tests",
+            search_dir=project / "pipeline_tests",
             default_bundle_file=project / "databricks.yml",
         )
 
@@ -466,7 +466,7 @@ tests:
         )
 
         cases = all_cases(
-            pipeline_tests_dir=pipeline_tests,
+            search_dir=pipeline_tests,
             default_bundle_file=tmp_path / "databricks.yml",
         )
         assert len(cases) == 1
@@ -802,7 +802,7 @@ class TestLakeflowJaffleShop:
     def test_discovers_all_jaffle_shop_specs(self, tmp_path: Path) -> None:
         project = _create_lakeflow_project(tmp_path)
         cases = all_cases(
-            pipeline_tests_dir=project / "pipeline_tests",
+            search_dir=project / "pipeline_tests",
             default_bundle_file=project / "databricks.yml",
         )
 
@@ -818,7 +818,7 @@ class TestLakeflowJaffleShop:
     def test_schema_variables_resolved_from_bundle(self, tmp_path: Path) -> None:
         project = _create_lakeflow_project(tmp_path)
         cases = all_cases(
-            pipeline_tests_dir=project / "pipeline_tests",
+            search_dir=project / "pipeline_tests",
             default_bundle_file=project / "databricks.yml",
         )
 
@@ -832,7 +832,7 @@ class TestLakeflowJaffleShop:
         """Test silver SQL model: date truncation and type casting."""
         project = _create_lakeflow_project(tmp_path)
         cases = all_cases(
-            pipeline_tests_dir=project / "pipeline_tests",
+            search_dir=project / "pipeline_tests",
             default_bundle_file=project / "databricks.yml",
         )
 
@@ -846,7 +846,7 @@ class TestLakeflowJaffleShop:
         """Test Python model with @dp.table decorator, price conversion, boolean flags."""
         project = _create_lakeflow_project(tmp_path)
         cases = all_cases(
-            pipeline_tests_dir=project / "pipeline_tests",
+            search_dir=project / "pipeline_tests",
             default_bundle_file=project / "databricks.yml",
         )
 
@@ -860,7 +860,7 @@ class TestLakeflowJaffleShop:
         """Test gold SQL model: multi-table joins and aggregated supply costs."""
         project = _create_lakeflow_project(tmp_path)
         cases = all_cases(
-            pipeline_tests_dir=project / "pipeline_tests",
+            search_dir=project / "pipeline_tests",
             default_bundle_file=project / "databricks.yml",
         )
 
@@ -979,10 +979,10 @@ tests:
     )
 
     # Pipeline test spec (references spark-pipeline.yml directly, no bundle)
-    pipeline_tests = tmp_path / "pipeline_tests"
-    pipeline_tests.mkdir()
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
 
-    (pipeline_tests / "my_pipeline_tests.yml").write_text(
+    (tests_dir / "my_pipeline_tests.yml").write_text(
         """
 suite: opensource_sdp_tests
 log_level: DEBUG
@@ -1005,7 +1005,7 @@ class TestOpenSourceSDP:
 
     def test_discovers_specs_from_spark_pipeline_yml(self, tmp_path: Path) -> None:
         project = _create_opensource_sdp_project(tmp_path)
-        cases = all_cases(pipeline_tests_dir=project / "pipeline_tests")
+        cases = all_cases(search_dir=project)
 
         assert len(cases) == 2
         names = sorted(case.get("name", "unnamed") for _, case, _ in cases)
@@ -1013,7 +1013,7 @@ class TestOpenSourceSDP:
 
     def test_resolves_configuration_as_defaults(self, tmp_path: Path) -> None:
         project = _create_opensource_sdp_project(tmp_path)
-        cases = all_cases(pipeline_tests_dir=project / "pipeline_tests")
+        cases = all_cases(search_dir=project)
 
         for _, case, _ in cases:
             assert case.get("bronze_schema") == "oss_bronze"
@@ -1022,7 +1022,7 @@ class TestOpenSourceSDP:
 
     def test_resolves_database_as_pipeline_schema(self, tmp_path: Path) -> None:
         project = _create_opensource_sdp_project(tmp_path)
-        cases = all_cases(pipeline_tests_dir=project / "pipeline_tests")
+        cases = all_cases(search_dir=project)
 
         for _, case, _ in cases:
             assert case.get("pipeline_schema") == "my_db"
@@ -1032,7 +1032,7 @@ class TestOpenSourceSDP:
     def test_sql_model_passes(self, spark, tmp_path: Path) -> None:
         """Test SQL model in open source SDP project."""
         project = _create_opensource_sdp_project(tmp_path)
-        cases = all_cases(pipeline_tests_dir=project / "pipeline_tests")
+        cases = all_cases(search_dir=project)
 
         sql_case = [c for _, c, _ in cases if c.get("name") == "concatenates_first_and_last_name"]
         assert len(sql_case) == 1
@@ -1043,7 +1043,7 @@ class TestOpenSourceSDP:
     def test_python_model_passes(self, spark, tmp_path: Path) -> None:
         """Test Python model in open source SDP project."""
         project = _create_opensource_sdp_project(tmp_path)
-        cases = all_cases(pipeline_tests_dir=project / "pipeline_tests")
+        cases = all_cases(search_dir=project)
 
         py_case = [c for _, c, _ in cases if c.get("name") == "counts_customers"]
         assert len(py_case) == 1

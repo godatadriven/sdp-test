@@ -43,26 +43,26 @@ class CaseResult:
     expected_rows: list[dict[str, Any]]
 
 
-def find_spec_files(pipeline_tests_dir: Path | None = None) -> list[Path]:
-    if pipeline_tests_dir is None:
-        pipeline_tests_dir = Path.cwd() / "pipeline_tests"
+def find_spec_files(search_dir: Path | None = None) -> list[Path]:
+    if search_dir is None:
+        search_dir = Path.cwd()
     files = set()
-    files.update(pipeline_tests_dir.glob("*_pipeline_tests.yml"))
-    files.update(pipeline_tests_dir.glob("*_pipeline_tests.yaml"))
+    files.update(search_dir.rglob("*_pipeline_tests.yml"))
+    files.update(search_dir.rglob("*_pipeline_tests.yaml"))
     return sorted(files)
 
 
 def all_cases(
-    pipeline_tests_dir: Path | None = None,
+    search_dir: Path | None = None,
     default_bundle_file: Path | None = None,
 ) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
-    if pipeline_tests_dir is None:
-        pipeline_tests_dir = Path.cwd() / "pipeline_tests"
+    if search_dir is None:
+        search_dir = Path.cwd()
     if default_bundle_file is None:
         default_bundle_file = Path.cwd() / "databricks.yml"
 
     cases: list[tuple[Path, dict[str, Any], dict[str, Any]]] = []
-    for pipeline_spec_file in find_spec_files(pipeline_tests_dir):
+    for pipeline_spec_file in find_spec_files(search_dir):
         pipeline_spec = PipelineEntrySpec.model_validate(load_pipeline_test_spec(str(pipeline_spec_file)))
         pipeline_spec_data = pipeline_spec.model_dump(exclude_none=True)
         bundle_cfg = pipeline_spec_data.get("bundle") or {}
