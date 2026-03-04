@@ -101,7 +101,9 @@ def load_bundle_context(
     }
 
     # Resolve nested ${...} references in the context itself.
-    resolved_context = resolve_template(raw_context, raw_context)
+    # Use lenient mode because some placeholders (e.g. ${resources.pipelines.*.id})
+    # are only available at deploy time and cannot be resolved locally.
+    resolved_context = resolve_template(raw_context, raw_context, lenient=True)
     return resolved_context
 
 
