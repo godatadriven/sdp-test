@@ -104,9 +104,16 @@ def test_resolve_template_lenient_keeps_unknown_placeholder() -> None:
     assert result == "${missing.var}"
 
 
-def test_resolve_template_raises_on_non_scalar() -> None:
+def test_resolve_template_complex_type_standalone() -> None:
+    """A standalone placeholder resolving to a dict/list returns the raw value."""
+    assert resolve_template("${nested}", {"nested": {"a": 1}}) == {"a": 1}
+    assert resolve_template("${items}", {"items": [1, 2, 3]}) == [1, 2, 3]
+
+
+def test_resolve_template_raises_on_non_scalar_interpolation() -> None:
+    """Complex types embedded in a larger string still raise."""
     with pytest.raises(ValueError, match="Cannot interpolate non-scalar"):
-        resolve_template("${nested}", {"nested": {"a": 1}})
+        resolve_template("prefix_${nested}_suffix", {"nested": {"a": 1}})
 
 
 def test_resolve_template_raises_on_unknown_placeholder() -> None:

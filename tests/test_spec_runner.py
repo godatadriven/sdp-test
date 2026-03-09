@@ -184,7 +184,7 @@ FROM ${bronze_schema}.raw_input;
     assert result.right_minus_left == 0
 
 
-def test_run_case_rejects_unqualified_input_table(spark, tmp_path: Path) -> None:
+def test_run_case_unqualified_input_table_as_temp_view(spark, tmp_path: Path) -> None:
     model_sql = tmp_path / "simple_model.sql"
     model_sql.write_text(
         """
@@ -195,15 +195,13 @@ CREATE OR REFRESH MATERIALIZED VIEW ${silver_schema}.simple_model
 CLUSTER BY AUTO
 AS
 SELECT CAST(id AS STRING) AS id
-FROM ${bronze_schema}.raw_input;
+FROM raw_input;
 """.strip()
     )
 
     case = {
-        "name": "bad_table_name",
-        "bronze_schema": "ut_bronze",
+        "name": "unqualified_table",
         "silver_schema": "ut_silver",
-        "gold_schema": "ut_gold",
         "model": str(model_sql),
         "given": [
             {
@@ -214,8 +212,9 @@ FROM ${bronze_schema}.raw_input;
         "expect": {"rows": [{"id": "1"}]},
     }
 
-    with pytest.raises(ValueError, match="schema-qualified"):
-        spec_runner.run_case(spark, case)
+    result = spec_runner.run_case(spark, case)
+    assert result.left_minus_right == 0
+    assert result.right_minus_left == 0
 
 
 def test_run_case_executes_model_python(spark, tmp_path: Path) -> None:
