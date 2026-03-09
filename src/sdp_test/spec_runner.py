@@ -57,9 +57,7 @@ def cases_from_spec(
     bundle_cfg = pipeline_spec_data.get("bundle") or {}
     bundle_file = bundle_cfg.get("file") or (str(default_bundle_file) if default_bundle_file else "databricks.yml")
     bundle_path = (
-        (spec_path.parent / bundle_file).resolve()
-        if not Path(bundle_file).is_absolute()
-        else Path(bundle_file)
+        (spec_path.parent / bundle_file).resolve() if not Path(bundle_file).is_absolute() else Path(bundle_file)
     )
     bundle_target = bundle_cfg.get("target")
     bundle_vars = bundle_cfg.get("variables") or {}
@@ -225,7 +223,7 @@ def _create_df_with_fallback_schema(spark, rows: list[dict[str, Any]], column_ty
     import json as _json
 
     from pyspark.sql import functions as sf
-    from pyspark.sql.types import StringType, StructField, StructType
+    from pyspark.sql.types import StringType, StructField, StructType, _parse_datatype_string
 
     column_types = column_types or {}
     variant_cols = {col for col, typ in column_types.items() if typ.lower() == "variant"}
@@ -234,11 +232,7 @@ def _create_df_with_fallback_schema(spark, rows: list[dict[str, Any]], column_ty
     # infer the rest of the schema normally.
     if variant_cols:
         rows = [
-            {
-                k: _json.dumps(v) if k in variant_cols and v is not None else v
-                for k, v in row.items()
-            }
-            for row in rows
+            {k: _json.dumps(v) if k in variant_cols and v is not None else v for k, v in row.items()} for row in rows
         ]
 
     try:
@@ -249,6 +243,10 @@ def _create_df_with_fallback_schema(spark, rows: list[dict[str, Any]], column_ty
         columns = list(rows[0].keys())
         fields: list[StructField] = []
         for col in columns:
+            if col in column_types and column_types[col].lower() != "variant":
+                fields.append(StructField(col, _parse_datatype_string(column_types[col]), True))
+                continue
+
             sample = next((r[col] for r in rows if r.get(col) is not None), None)
             if sample is None:
                 fields.append(StructField(col, StringType(), True))
@@ -257,6 +255,12 @@ def _create_df_with_fallback_schema(spark, rows: list[dict[str, Any]], column_ty
                 probe = spark.createDataFrame([{col: sample}])
                 fields.append(StructField(col, probe.schema[0].dataType, True))
         df = spark.createDataFrame(rows, schema=StructType(fields))
+
+    # Post-process: cast columns with explicit (non-variant) types.
+    typed_cols = {col: typ for col, typ in column_types.items() if typ.lower() != "variant"}
+    for col, typ in typed_cols.items():
+        if col in df.columns:
+            df = df.withColumn(col, sf.col(col).cast(typ))
 
     # Post-process: convert JSON strings to VARIANT via parse_json().
     if variant_cols:
@@ -335,6 +339,11 @@ def run_case(spark, case: dict[str, Any]) -> CaseResult:
 
     expected_columns = list(expect_rows[0].keys())
     actual_subset = result_df.select(*expected_columns)
+    # Materialize the result to break the lazy plan chain.  This works around
+    # a PySpark 4.1 optimizer bug where the combination of VARIANT-based
+    # try_variant_get + dropDuplicates + column projection + exceptAll produces
+    # an invalid physical plan (INTERNAL_ERROR_ATTRIBUTE_NOT_FOUND).
+    actual_subset = spark.createDataFrame(actual_subset.collect(), schema=actual_subset.schema)
     expected_df = spark.createDataFrame(
         _coerce_expected_rows(expect_rows, actual_subset.schema),
         schema=actual_subset.schema,
@@ -643,11 +652,21 @@ def _schema_map_from_case(case: dict[str, Any]) -> dict[str, str]:
     fixed set of key names we include every string-valued entry from the case dict,
     except for internal/structural keys that are never meant as SQL placeholders.
     """
-    _skip_keys = frozenset({
-        "model", "name", "given", "expect", "callable",
-        "__spec_dir", "__suite", "__pipeline_spec_dir",
-        "pipeline_name", "pipeline_schema", "catalog",
-    })
+    _skip_keys = frozenset(
+        {
+            "model",
+            "name",
+            "given",
+            "expect",
+            "callable",
+            "__spec_dir",
+            "__suite",
+            "__pipeline_spec_dir",
+            "pipeline_name",
+            "pipeline_schema",
+            "catalog",
+        }
+    )
     return {k: str(v) for k, v in case.items() if isinstance(v, str) and k not in _skip_keys}
 
 
@@ -685,14 +704,22 @@ def _run_python_model(model_path: Path, case: dict[str, Any]):
     shim_module = types.ModuleType("pyspark.pipelines")
     for attr in (
         # Core decorators
-        "table", "materialized_view", "temporary_view", "append_flow", "view",
+        "table",
+        "materialized_view",
+        "temporary_view",
+        "append_flow",
+        "view",
         # Expectation decorators
-        "expect", "expect_or_drop", "expect_or_fail",
+        "expect",
+        "expect_or_drop",
+        "expect_or_fail",
         # Sink decorator
         "foreach_batch_sink",
         # No-op functions
-        "create_streaming_table", "create_sink",
-        "apply_changes", "create_auto_cdc_flow",
+        "create_streaming_table",
+        "create_sink",
+        "apply_changes",
+        "create_auto_cdc_flow",
         "create_auto_cdc_from_snapshot_flow",
     ):
         setattr(shim_module, attr, getattr(pipelines_shim, attr))

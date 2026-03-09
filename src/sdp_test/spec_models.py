@@ -12,7 +12,7 @@ class GivenInputSpec(BaseModel):
 
     table: str = Field(description="Schema-qualified input table name, e.g. bronze.raw_stores.")
     rows: list[dict[str, Any]] = Field(default_factory=list, description="Input rows for the table.")
-    schema: dict[str, str] = Field(
+    schema: dict[str, str] = Field(  # noqa: A003
         default_factory=dict,
         description="Optional column type overrides, e.g. {data: variant}.",
     )

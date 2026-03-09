@@ -910,6 +910,24 @@ def test_coerce_value_to_field_timestamp_string() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_create_df_with_fallback_schema_explicit_column_types(spark) -> None:
+    """When column_types specifies a type (non-variant), the schema uses that type."""
+    rows = [{"id": "1", "amount": "100", "flag": "true"}]
+    column_types = {"amount": "int", "flag": "boolean"}
+    df = spec_runner._create_df_with_fallback_schema(spark, rows, column_types)
+
+    from pyspark.sql.types import BooleanType, IntegerType, StringType
+
+    schema_map = {f.name: f.dataType for f in df.schema.fields}
+    assert isinstance(schema_map["id"], StringType)
+    assert isinstance(schema_map["amount"], IntegerType)
+    assert isinstance(schema_map["flag"], BooleanType)
+
+    result = df.collect()
+    assert result[0]["amount"] == 100
+    assert result[0]["flag"] is True
+
+
 def test_coerce_value_to_field_date_string() -> None:
     from unittest.mock import MagicMock
 
