@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import re
 from pathlib import Path
 from typing import Any
@@ -27,7 +26,18 @@ def _lookup_path(context: dict[str, Any], path_expr: str) -> Any:
     return current
 
 
-def _resolve_str(text: str, context: dict[str, Any], *, lenient: bool = False) -> str:
+def _resolve_str(text: str, context: dict[str, Any], *, lenient: bool = False) -> Any:
+    # If the entire string is a single placeholder, return the raw value
+    # (even complex types like dict/list).
+    single = PLACEHOLDER_RE.fullmatch(text)
+    if single:
+        try:
+            return _lookup_path(context, single.group(1).strip())
+        except KeyError:
+            if lenient:
+                return text
+            raise
+
     def _replace(match: re.Match[str]) -> str:
         try:
             value = _lookup_path(context, match.group(1).strip())
@@ -62,6 +72,7 @@ def load_bundle_context(
     bundle_file: str,
     target: str | None = None,
     variable_overrides: dict[str, Any] | None = None,
+    variable_resolution_depth: int = 5,
 ) -> dict[str, Any]:
     bundle_path = Path(bundle_file)
     root = bundle_path.parent
@@ -73,6 +84,10 @@ def load_bundle_context(
         for included_file in sorted(root.glob(pattern)):
             included_data = yaml.safe_load(included_file.read_text()) or {}
             if included_data.get("resources"):
+                # Annotate each pipeline with the directory of its source file
+                # so that relative library paths can be resolved correctly.
+                for pipeline_def in (included_data["resources"].get("pipelines") or {}).values():
+                    pipeline_def["__pipeline_spec_dir"] = str(included_file.parent)
                 _deep_merge(resources, included_data["resources"])
 
     variables: dict[str, Any] = {}
@@ -103,7 +118,13 @@ def load_bundle_context(
     # Resolve nested ${...} references in the context itself.
     # Use lenient mode because some placeholders (e.g. ${resources.pipelines.*.id})
     # are only available at deploy time and cannot be resolved locally.
-    resolved_context = resolve_template(raw_context, raw_context, lenient=True)
+    # Iterate to resolve transitive references (e.g. ${var.x} -> ${resources.y.z}).
+    resolved_context = raw_context
+    for _ in range(variable_resolution_depth):
+        next_context = resolve_template(resolved_context, resolved_context, lenient=True)
+        if next_context == resolved_context:
+            break
+        resolved_context = next_context
     return resolved_context
 
 

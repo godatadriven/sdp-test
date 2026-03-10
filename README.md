@@ -265,6 +265,7 @@ libraries:
 ```toml
 [tool.sdp-test]
 auto_discover = true    # default: true
+variable_resolution_depth = 5 # default: 5
 
 [tool.pytest.ini_options]
 testpaths = [
@@ -277,6 +278,7 @@ testpaths = [
 | Option | Default | Description |
 |---|---|---|
 | `auto_discover` | `true` | Auto-discover `databricks.yml` and `spark-pipeline.yml` from the project root |
+| `variable_resolution_depth` | `5` | Maximum number of iterations when resolving template variables in yaml files. See [Template variables](#template-variables). |
 
 To collect specific pipeline files, add them to `testpaths` in `[tool.pytest.ini_options]` — or pass them as CLI arguments (`pytest spark-pipeline.yml`).
 
@@ -354,6 +356,9 @@ Variables use `${...}` syntax and resolve from the pipeline configuration and bu
 | `${bronze_schema}` | Pipeline `configuration` |
 | `${var.catalog}` | Bundle `variables` |
 | `${bundle.target}` | Bundle metadata |
+
+Variables can refer to other variables, so the result of a single variable resolution can still contain unresolved variables. By default variable resolution is repeated with the result untill there are no more changes in the result object, with a maximum of 5 iterations. The maximum number of interations can be increased or decreased with the `variable_resolution_depth` configuration parameter.
+
 
 ## Project structure
 

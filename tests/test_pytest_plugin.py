@@ -41,6 +41,14 @@ def test_load_sdp_config_with_sdp_section(tmp_path: Path) -> None:
     assert result["auto_discover"] is False
 
 
+def test_load_sdp_config_variable_resolution_depth(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.sdp-test]\nvariable_resolution_depth = 10\n"
+    )
+    result = _load_sdp_config(tmp_path)
+    assert result["variable_resolution_depth"] == 10
+
+
 # ---------------------------------------------------------------------------
 # _find_pipeline_files
 # ---------------------------------------------------------------------------
@@ -217,6 +225,37 @@ libraries: []
     )
     result = pytester.runpytest("--collect-only", "-p", "sdp_test")
     result.stdout.fnmatch_lines(["*no tests*"])
+
+
+def test_plugin_variable_resolution_depth_from_pyproject(pytester) -> None:
+    """variable_resolution_depth from pyproject.toml is set on the pytest config."""
+    pytester.makefile(
+        ".toml",
+        pyproject="""
+[tool.sdp-test]
+variable_resolution_depth = 10
+""",
+    )
+    pytester.makepyfile(
+        test_depth="""
+def test_depth(request):
+    assert request.config._variable_resolution_depth == 10
+"""
+    )
+    result = pytester.runpytest("-p", "sdp_test")
+    result.assert_outcomes(passed=1)
+
+
+def test_plugin_variable_resolution_depth_default(pytester) -> None:
+    """variable_resolution_depth defaults to 5 when not set in pyproject.toml."""
+    pytester.makepyfile(
+        test_depth="""
+def test_depth(request):
+    assert request.config._variable_resolution_depth == 5
+"""
+    )
+    result = pytester.runpytest("-p", "sdp_test")
+    result.assert_outcomes(passed=1)
 
 
 def test_plugin_sdp_test_item_reportinfo(pytester) -> None:
