@@ -340,9 +340,8 @@ def run_case(spark, case: dict[str, Any]) -> CaseResult:
     expected_columns = list(expect_rows[0].keys())
     actual_subset = result_df.select(*expected_columns)
     # Materialize the result to break the lazy plan chain.  This works around
-    # a PySpark 4.1 optimizer bug where the combination of VARIANT-based
-    # try_variant_get + dropDuplicates + column projection + exceptAll produces
-    # an invalid physical plan (INTERNAL_ERROR_ATTRIBUTE_NOT_FOUND).
+    # a PySpark 4.1 optimizer bug where dropDuplicates(subset) + exceptAll
+    # produces an invalid physical plan (INTERNAL_ERROR_ATTRIBUTE_NOT_FOUND).
     actual_subset = spark.createDataFrame(actual_subset.collect(), schema=actual_subset.schema)
     expected_df = spark.createDataFrame(
         _coerce_expected_rows(expect_rows, actual_subset.schema),
