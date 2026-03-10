@@ -1045,6 +1045,7 @@ spark = [
 [package.dev-dependencies]
 dev = [
     { name = "pre-commit" },
+    { name = "pyspark", extra = ["pipelines"] },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
@@ -1061,6 +1062,7 @@ provides-extras = ["spark"]
 [package.metadata.requires-dev]
 dev = [
     { name = "pre-commit", specifier = ">=4.0" },
+    { name = "pyspark", extras = ["pipelines"], specifier = ">=4.1" },
     { name = "pytest" },
     { name = "pytest-cov", specifier = ">=7.0.0" },
     { name = "ruff" },
