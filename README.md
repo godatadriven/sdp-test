@@ -66,7 +66,7 @@ sdp-test reads your pipeline definition to learn two things:
 
 It scans those paths for `*.unit_tests.yml` files, substitutes variables, and runs each test case against a local SparkSession. For SQL models it strips the DDL preamble (`CREATE OR REFRESH MATERIALIZED VIEW … AS`) and executes only the `SELECT` query. For Python models it shims the pipeline decorators (`@dp.table`, `@dp.view`, etc.) so your model functions run without a live pipeline or remote connection.
 
-* Note: declarative pipelines will error when yaml files are among the pipeline files. This can be a problem when using `glob` pattern to select files. See below pipeline config snippet to include only the .py and .sql files and prevent the yaml not supported error:
+* Note: SDP doesnt support YAML files inside the pipeline library. Hence, you cant use the select all files `glob` pattern inside your libraries config. See below pipeline config snippet example to include only the .py and .sql files:
 ```yaml
 libraries:
   - file:
