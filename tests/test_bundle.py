@@ -136,3 +136,32 @@ variables:
 
     context = load_bundle_context(str(bundle_file))
     assert context["var"]["region"] == "us-east-1"
+
+
+def test_load_bundle_context_variable_resolution_depth(tmp_path) -> None:
+    """Test that variable_resolution_depth controls the number of resolution iterations."""
+    bundle_file = tmp_path / "databricks.yml"
+    # Chain: var.a -> ${var.b} -> ${var.c} -> "final"
+    # Needs 3 iterations to fully resolve.
+    bundle_file.write_text(
+        """
+bundle:
+  name: test_bundle
+
+variables:
+  a:
+    default: "${var.b}"
+  b:
+    default: "${var.c}"
+  c:
+    default: final
+"""
+    )
+
+    # With depth=3, the chain resolves fully.
+    context = load_bundle_context(str(bundle_file), variable_resolution_depth=3)
+    assert context["var"]["a"] == "final"
+
+    # With depth=1, only one iteration runs: a="${var.b}" resolves to "${var.c}".
+    context = load_bundle_context(str(bundle_file), variable_resolution_depth=1)
+    assert context["var"]["a"] == "${var.c}"

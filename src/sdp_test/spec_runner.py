@@ -50,6 +50,7 @@ def find_spec_files(search_dir: Path | None = None) -> list[Path]:
 def cases_from_spec(
     spec_path: Path,
     default_bundle_file: Path | None = None,
+    variable_resolution_depth: int = 5,
 ) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
     """Process a single *_pipeline_tests.yml spec and return all test cases."""
     pipeline_spec = PipelineEntrySpec.model_validate(load_pipeline_test_spec(str(spec_path)))
@@ -62,7 +63,7 @@ def cases_from_spec(
     bundle_target = bundle_cfg.get("target")
     bundle_vars = bundle_cfg.get("variables") or {}
     if bundle_path.exists():
-        context = load_bundle_context(str(bundle_path), target=bundle_target, variable_overrides=bundle_vars)
+        context = load_bundle_context(str(bundle_path), target=bundle_target, variable_overrides=bundle_vars, variable_resolution_depth=variable_resolution_depth)
     else:
         context: dict[str, Any] = {
             "bundle": {"name": "default", "uuid": None, "target": "local"},
@@ -120,10 +121,10 @@ def cases_from_pipeline_def(
     return cases
 
 
-def cases_from_bundle(bundle_path: Path) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
+def cases_from_bundle(bundle_path: Path, variable_resolution_depth: int = 5) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
     """Load a ``databricks.yml`` and return test cases for all pipelines."""
     logger.debug("Loading bundle: %s", bundle_path)
-    context = load_bundle_context(str(bundle_path))
+    context = load_bundle_context(str(bundle_path), variable_resolution_depth=variable_resolution_depth)
     pipelines = (context.get("resources") or {}).get("pipelines") or {}
     logger.info("Found %d pipeline(s) in bundle %s", len(pipelines), bundle_path.name)
     cases: list[tuple[Path, dict[str, Any], dict[str, Any]]] = []
@@ -146,7 +147,7 @@ def _find_bundle_file(start: Path) -> Path | None:
     return None
 
 
-def cases_from_pipeline_file(pipeline_path: Path) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
+def cases_from_pipeline_file(pipeline_path: Path, variable_resolution_depth: int = 5) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
     """Load a pipeline definition file and return test cases.
 
     Supports three formats:
@@ -160,7 +161,7 @@ def cases_from_pipeline_file(pipeline_path: Path) -> list[tuple[Path, dict[str, 
     bundle_file = _find_bundle_file(pipeline_path)
     if bundle_file:
         try:
-            context = load_bundle_context(str(bundle_file))
+            context = load_bundle_context(str(bundle_file), variable_resolution_depth=variable_resolution_depth)
         except Exception:  # noqa: BLE001
             context = _minimal_context(pipeline_path)
     else:

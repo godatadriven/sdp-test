@@ -30,6 +30,7 @@ from .spec_runner import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 class SDPTestFailure(Exception):
     """Raised when a pipeline test case does not match expected output."""
 
@@ -104,7 +105,8 @@ def pytest_configure(config):  # pragma: no cover – runs in subprocess via pyt
     Disable auto-discovery with ``[tool.sdp-test] auto_discover = false``.
     """
     rootdir = Path(config.rootdir)
-    cfg = _load_sdp_config(rootdir)
+    cfg: dict[str, Any] = _load_sdp_config(rootdir)
+    config._variable_resolution_depth = cfg.get("variable_resolution_depth", 5)
 
     # Always track explicit CLI args so they can be collected even when
     # auto_discover is disabled.
@@ -166,12 +168,14 @@ def pytest_collect_file(parent, file_path):  # pragma: no cover – runs in subp
 # Collectors
 # ---------------------------------------------------------------------------
 
+
 class SDPSpecFile(pytest.File):  # pragma: no cover – runs in subprocess via pytester
     """Collector for a ``*_pipeline_tests.yml`` spec file."""
 
     def collect(self):
         bundle_file = _resolve_bundle_file(self.config)
-        for spec_file, case, _context in cases_from_spec(self.path, bundle_file):
+        depth = getattr(self.config, "_variable_resolution_depth", 5)
+        for spec_file, case, _context in cases_from_spec(self.path, bundle_file, variable_resolution_depth=depth):
             suite = spec_file.stem.replace(".unit_tests", "")
             name = case.get("name", "unnamed")
             test_name = f"{suite}::{name}" if spec_file != self.path else name
@@ -182,7 +186,8 @@ class BundleFile(pytest.File):  # pragma: no cover – runs in subprocess via py
     """Collector for a ``databricks.yml`` bundle file — auto-discovers tests from all pipelines."""
 
     def collect(self):
-        for spec_file, case, _context in cases_from_bundle(self.path):
+        depth = getattr(self.config, "_variable_resolution_depth", 5)
+        for spec_file, case, _context in cases_from_bundle(self.path, variable_resolution_depth=depth):
             pipeline_name = case.get("pipeline_name") or "pipeline"
             suite = spec_file.stem.replace(".unit_tests", "")
             name = case.get("name", "unnamed")
@@ -194,7 +199,8 @@ class PipelineFile(pytest.File):  # pragma: no cover – runs in subprocess via 
     """Collector for a ``spark-pipeline.yml`` or ``*.pipeline.yml`` file."""
 
     def collect(self):
-        for spec_file, case, _context in cases_from_pipeline_file(self.path):
+        depth = getattr(self.config, "_variable_resolution_depth", 5)
+        for spec_file, case, _context in cases_from_pipeline_file(self.path, variable_resolution_depth=depth):
             pipeline_name = case.get("pipeline_name") or "pipeline"
             suite = spec_file.stem.replace(".unit_tests", "")
             name = case.get("name", "unnamed")
@@ -205,6 +211,7 @@ class PipelineFile(pytest.File):  # pragma: no cover – runs in subprocess via 
 # ---------------------------------------------------------------------------
 # Test item
 # ---------------------------------------------------------------------------
+
 
 class SDPTestItem(pytest.Item):  # pragma: no cover – runs in subprocess via pytester
     """A single pipeline test case."""
@@ -221,9 +228,7 @@ class SDPTestItem(pytest.Item):  # pragma: no cover – runs in subprocess via p
 
         # Lazily create a session-level temp dir via pytest's tmp_path_factory.
         if not hasattr(self.config, "_sdp_tmpdir"):
-            self.config._sdp_tmpdir = str(
-                self.config._tmp_path_factory.mktemp("sdp_test")
-            )
+            self.config._sdp_tmpdir = str(self.config._tmp_path_factory.mktemp("sdp_test"))
 
         spark = SparkSession.getActiveSession()
         if spark is None:

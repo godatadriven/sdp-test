@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import re
 from pathlib import Path
 from typing import Any
@@ -73,6 +72,7 @@ def load_bundle_context(
     bundle_file: str,
     target: str | None = None,
     variable_overrides: dict[str, Any] | None = None,
+    variable_resolution_depth: int = 5,
 ) -> dict[str, Any]:
     bundle_path = Path(bundle_file)
     root = bundle_path.parent
@@ -120,7 +120,7 @@ def load_bundle_context(
     # are only available at deploy time and cannot be resolved locally.
     # Iterate to resolve transitive references (e.g. ${var.x} -> ${resources.y.z}).
     resolved_context = raw_context
-    for _ in range(5):
+    for _ in range(variable_resolution_depth):
         next_context = resolve_template(resolved_context, resolved_context, lenient=True)
         if next_context == resolved_context:
             break
