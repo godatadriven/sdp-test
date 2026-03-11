@@ -1,6 +1,6 @@
 # sdp-test
 
-Declarative unit testing for [Spark Declarative Pipelines (SDP)](https://spark.apache.org/docs/latest/declarative-pipelines-programming-guide.html) and [Lakeflow Declarative Pipelines (LDP)](https://docs.databricks.com/aws/en/ldp/).
+Pytest plugin for [Spark Declarative Pipelines (SDP)](https://spark.apache.org/docs/latest/declarative-pipelines-programming-guide.html) and [Lakeflow Declarative Pipelines (LDP)](https://docs.databricks.com/aws/en/ldp/).
 
 Write pipeline tests as YAML and run them locally with pytest — no boilerplate Python test code, no remote cluster or Databricks workspace required.
 
