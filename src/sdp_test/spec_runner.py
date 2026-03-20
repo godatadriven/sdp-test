@@ -420,7 +420,7 @@ def _load_pipeline_defaults(
     return _extract_pipeline_defaults(pipeline_def), pipeline_def
 
 
-def _extract_pipeline_defaults(pipeline_def: dict[str, Any]) -> dict[str, str]:
+def _extract_pipeline_defaults(pipeline_def: dict[str, Any]) -> dict[str, Any]:
     """Extract default substitutions from a pipeline definition.
 
     Supports both Databricks bundle format and open source spark-pipeline.yml format.
@@ -691,9 +691,32 @@ def _set_model_runtime_conf(spark, case: dict[str, Any]) -> None:
             spark.conf.set(key, case[key])
 
 
+def _patch_readstream():
+    """Monkey-patch ``spark.readStream`` to return ``spark.read`` for local batch testing.
+
+    Streaming sources are not available locally, so we redirect
+    ``spark.readStream`` to the regular batch ``DataFrameReader``.  This
+    mirrors the ``STREAM()`` stripping done for SQL models.
+
+    Returns a callable that restores the original property.
+    """
+    from pyspark.sql import SparkSession
+
+    original_property = SparkSession.readStream.fget
+
+    SparkSession.readStream = property(lambda self: self.read)  # ty: ignore[invalid-assignment]
+
+    def _restore():
+        SparkSession.readStream = property(original_property)
+
+    return _restore
+
+
 def _run_python_model(model_path: Path, case: dict[str, Any]):
     module_name = f"_sdp_model_{model_path.stem}_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, str(model_path))
+    if spec is None or spec.loader is None:
+        raise ValueError(f"Could not load module spec for: {model_path}")
     module = importlib.util.module_from_spec(spec)
 
     # Local pytest execution runs outside declarative pipeline context.
@@ -724,22 +747,27 @@ def _run_python_model(model_path: Path, case: dict[str, Any]):
     ):
         setattr(shim_module, attr, getattr(pipelines_shim, attr))
     sys.modules["pyspark.pipelines"] = shim_module
+
+    # Redirect spark.readStream to spark.read so streaming models can run
+    # locally as batch queries (mirrors STREAM() stripping for SQL models).
+    restore_readstream = _patch_readstream()
     try:
         spec.loader.exec_module(module)
+
+        callable_name = case.get("callable") or model_path.stem
+        model_callable = getattr(module, callable_name, None)
+        if model_callable is None:
+            raise ValueError(f"Could not find callable '{callable_name}' in Python model file: {model_path}")
+        if not callable(model_callable):
+            raise ValueError(f"Resolved attribute '{callable_name}' in {model_path} is not callable")
+
+        return model_callable()
     finally:
+        restore_readstream()
         if saved_pipelines_module is not None:  # pragma: no cover – Databricks runtime only
             sys.modules["pyspark.pipelines"] = saved_pipelines_module
         else:
             sys.modules.pop("pyspark.pipelines", None)
-
-    callable_name = case.get("callable") or model_path.stem
-    model_callable = getattr(module, callable_name, None)
-    if model_callable is None:
-        raise ValueError(f"Could not find callable '{callable_name}' in Python model file: {model_path}")
-    if not callable(model_callable):
-        raise ValueError(f"Resolved attribute '{callable_name}' in {model_path} is not callable")
-
-    return model_callable()
 
 
 def _rows_for_log(df, columns: list[str], limit: int = 50) -> list[dict[str, Any]]:

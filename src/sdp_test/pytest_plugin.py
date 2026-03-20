@@ -53,7 +53,7 @@ def _load_sdp_config(rootdir: Path) -> dict[str, Any]:
     if not pyproject.exists():
         return {}
     try:
-        import tomllib
+        import tomllib  # ty: ignore[unresolved-import]
     except ModuleNotFoundError:  # pragma: no cover – tomllib is always available on Python 3.11+
         return {}  # pragma: no cover
     with open(pyproject, "rb") as f:
@@ -228,7 +228,7 @@ class SDPTestItem(pytest.Item):  # pragma: no cover – runs in subprocess via p
 
         # Lazily create a session-level temp dir via pytest's tmp_path_factory.
         if not hasattr(self.config, "_sdp_tmpdir"):
-            self.config._sdp_tmpdir = str(self.config._tmp_path_factory.mktemp("sdp_test"))
+            self.config._sdp_tmpdir = str(self.config._tmp_path_factory.mktemp("sdp_test"))  # ty: ignore[unresolved-attribute]
 
         spark = SparkSession.getActiveSession()
         if spark is None:
@@ -236,7 +236,7 @@ class SDPTestItem(pytest.Item):  # pragma: no cover – runs in subprocess via p
                 SparkSession.builder.master("local[2]")
                 .appName("sdp-test")
                 .config("spark.sql.shuffle.partitions", "1")
-                .config("spark.sql.warehouse.dir", self.config._sdp_tmpdir)
+                .config("spark.sql.warehouse.dir", self.config._sdp_tmpdir)  # ty: ignore[unresolved-attribute]
                 .getOrCreate()
             )
             spark.sparkContext.setLogLevel("WARN")
@@ -245,10 +245,10 @@ class SDPTestItem(pytest.Item):  # pragma: no cover – runs in subprocess via p
         if result.left_minus_right != 0 or result.right_minus_left != 0:
             raise SDPTestFailure(self.case, result)
 
-    def repr_failure(self, excinfo):
+    def repr_failure(self, excinfo, style=None):
         if isinstance(excinfo.value, SDPTestFailure):
             return str(excinfo.value)
-        return super().repr_failure(excinfo)
+        return super().repr_failure(excinfo, style=style)
 
     def reportinfo(self):
         return "", None, self.name

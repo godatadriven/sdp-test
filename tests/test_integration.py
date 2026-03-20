@@ -301,6 +301,90 @@ FROM ${bronze_schema}.raw_items;
         assert result.right_minus_left == 0
 
 
+class TestQualifyClause:
+    """Test that QUALIFY is rewritten for open-source Spark compatibility."""
+
+    def test_qualify_with_row_number(self, spark, tmp_path: Path) -> None:
+        model_sql = tmp_path / "dedup_model.sql"
+        model_sql.write_text(
+            "CREATE MATERIALIZED VIEW ${silver_schema}.deduped AS\n"
+            "SELECT\n"
+            "    CAST(id AS STRING) AS id,\n"
+            "    CAST(name AS STRING) AS name,\n"
+            "    CAST(ts AS INT) AS ts\n"
+            "FROM ${bronze_schema}.events\n"
+            "QUALIFY ROW_NUMBER() OVER (PARTITION BY id ORDER BY ts DESC) = 1"
+        )
+
+        case = {
+            "name": "qualify_dedup",
+            "bronze_schema": "q_bronze",
+            "silver_schema": "q_silver",
+            "gold_schema": "q_gold",
+            "model": str(model_sql),
+            "given": [
+                {
+                    "table": "q_bronze.events",
+                    "rows": [
+                        {"id": "1", "name": "Alice_old", "ts": 1},
+                        {"id": "1", "name": "Alice_new", "ts": 2},
+                        {"id": "2", "name": "Bob", "ts": 1},
+                    ],
+                }
+            ],
+            "expect": {
+                "rows": [
+                    {"id": "1", "name": "Alice_new"},
+                    {"id": "2", "name": "Bob"},
+                ],
+            },
+        }
+
+        result = run_case(spark, case)
+        assert result.left_minus_right == 0 and result.right_minus_left == 0, (
+            f"QUALIFY rewrite failed.\nActual: {result.actual_rows}\nExpected: {result.expected_rows}"
+        )
+
+    def test_qualify_with_alias_reference(self, spark, tmp_path: Path) -> None:
+        model_sql = tmp_path / "dedup_alias.sql"
+        model_sql.write_text(
+            "CREATE MATERIALIZED VIEW ${silver_schema}.deduped AS\n"
+            "SELECT\n"
+            "    CAST(id AS STRING) AS id,\n"
+            "    CAST(name AS STRING) AS name,\n"
+            "    ROW_NUMBER() OVER (PARTITION BY id ORDER BY ts DESC) AS rn\n"
+            "FROM ${bronze_schema}.events\n"
+            "QUALIFY rn = 1"
+        )
+
+        case = {
+            "name": "qualify_alias",
+            "bronze_schema": "qa_bronze",
+            "silver_schema": "qa_silver",
+            "gold_schema": "qa_gold",
+            "model": str(model_sql),
+            "given": [
+                {
+                    "table": "qa_bronze.events",
+                    "rows": [
+                        {"id": "1", "name": "Old", "ts": 1},
+                        {"id": "1", "name": "New", "ts": 2},
+                    ],
+                }
+            ],
+            "expect": {
+                "rows": [
+                    {"id": "1", "name": "New"},
+                ],
+            },
+        }
+
+        result = run_case(spark, case)
+        assert result.left_minus_right == 0 and result.right_minus_left == 0, (
+            f"QUALIFY alias rewrite failed.\nActual: {result.actual_rows}\nExpected: {result.expected_rows}"
+        )
+
+
 class TestBundleVariableResolution:
     """Test that template variables are resolved correctly in specs."""
 

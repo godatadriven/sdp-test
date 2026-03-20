@@ -8,11 +8,47 @@ if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
 
 
+def _rewrite_qualify(query: str) -> str:
+    """Rewrite ``QUALIFY <expr> <op> <value>`` into a subquery with ``WHERE``.
+
+    Open-source Spark does not support the ``QUALIFY`` clause.  This function
+    emulates it by wrapping the original query in a subquery, projecting the
+    qualify expression as a hidden column, and filtering with ``WHERE``.
+    """
+    # Flatten nested parentheses by replacing innermost (...) groups with
+    # spaces of equal length.  This preserves character positions so that a
+    # simple regex can find top-level QUALIFY without a manual depth loop.
+    flattened = query
+    while True:
+        replaced = re.sub(r"\([^()]*\)", lambda m: " " * len(m.group()), flattened)
+        if replaced == flattened:
+            break
+        flattened = replaced
+
+    match = re.search(r"\bQUALIFY\b", flattened, flags=re.IGNORECASE)
+    if match is None:
+        return query
+
+    inner_query = query[: match.start()].rstrip()
+    qualify_expr = query[match.end() :].strip()
+
+    return (
+        f"SELECT * FROM (\n"
+        f"  SELECT *, {qualify_expr} AS _sdp_qualify_cond\n"
+        f"  FROM (\n"
+        f"    {inner_query}\n"
+        f"  ) _sdp_inner\n"
+        f") _sdp_qualified\n"
+        f"WHERE _sdp_qualify_cond"
+    )
+
+
 def _model_query(sql_text: str) -> str:
     """Extract the SELECT query from a Lakeflow/DDL model SQL file.
 
     Also strips ``STREAM(table_ref)`` wrappers so that streaming-table
-    models can be tested with regular (batch) tables locally.
+    models can be tested with regular (batch) tables locally, and rewrites
+    ``QUALIFY`` clauses for open-source Spark compatibility.
     """
     match = re.search(r"\bAS\s+(?=(?:SELECT|WITH)\b)", sql_text, flags=re.IGNORECASE)
     if not match:
@@ -22,6 +58,8 @@ def _model_query(sql_text: str) -> str:
         query = query[:-1]
     # Replace STREAM(table_ref) with just table_ref for local batch execution.
     query = re.sub(r"\bSTREAM\s*\(([^)]+)\)", r"\1", query, flags=re.IGNORECASE)
+    # Rewrite QUALIFY clause for open-source Spark compatibility.
+    query = _rewrite_qualify(query)
     return query
 
 
