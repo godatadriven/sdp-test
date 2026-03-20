@@ -63,7 +63,12 @@ def cases_from_spec(
     bundle_target = bundle_cfg.get("target")
     bundle_vars = bundle_cfg.get("variables") or {}
     if bundle_path.exists():
-        context = load_bundle_context(str(bundle_path), target=bundle_target, variable_overrides=bundle_vars, variable_resolution_depth=variable_resolution_depth)
+        context = load_bundle_context(
+            str(bundle_path),
+            target=bundle_target,
+            variable_overrides=bundle_vars,
+            variable_resolution_depth=variable_resolution_depth,
+        )
     else:
         context: dict[str, Any] = {
             "bundle": {"name": "default", "uuid": None, "target": "local"},
@@ -121,7 +126,9 @@ def cases_from_pipeline_def(
     return cases
 
 
-def cases_from_bundle(bundle_path: Path, variable_resolution_depth: int = 5) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
+def cases_from_bundle(
+    bundle_path: Path, variable_resolution_depth: int = 5
+) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
     """Load a ``databricks.yml`` and return test cases for all pipelines."""
     logger.debug("Loading bundle: %s", bundle_path)
     context = load_bundle_context(str(bundle_path), variable_resolution_depth=variable_resolution_depth)
@@ -147,7 +154,9 @@ def _find_bundle_file(start: Path) -> Path | None:
     return None
 
 
-def cases_from_pipeline_file(pipeline_path: Path, variable_resolution_depth: int = 5) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
+def cases_from_pipeline_file(
+    pipeline_path: Path, variable_resolution_depth: int = 5
+) -> list[tuple[Path, dict[str, Any], dict[str, Any]]]:
     """Load a pipeline definition file and return test cases.
 
     Supports three formats:

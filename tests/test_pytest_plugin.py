@@ -34,17 +34,13 @@ def test_load_sdp_config_no_sdp_section(tmp_path: Path) -> None:
 
 
 def test_load_sdp_config_with_sdp_section(tmp_path: Path) -> None:
-    (tmp_path / "pyproject.toml").write_text(
-        "[tool.sdp-test]\nauto_discover = false\n"
-    )
+    (tmp_path / "pyproject.toml").write_text("[tool.sdp-test]\nauto_discover = false\n")
     result = _load_sdp_config(tmp_path)
     assert result["auto_discover"] is False
 
 
 def test_load_sdp_config_variable_resolution_depth(tmp_path: Path) -> None:
-    (tmp_path / "pyproject.toml").write_text(
-        "[tool.sdp-test]\nvariable_resolution_depth = 10\n"
-    )
+    (tmp_path / "pyproject.toml").write_text("[tool.sdp-test]\nvariable_resolution_depth = 10\n")
     result = _load_sdp_config(tmp_path)
     assert result["variable_resolution_depth"] == 10
 
@@ -214,14 +210,16 @@ def test_plugin_collects_spark_pipeline_file(pytester) -> None:
     """Plugin auto-discovers spark-pipeline.yml."""
     pytester.makefile(
         ".yml",
-        **{"spark-pipeline": """
+        **{
+            "spark-pipeline": """
 name: p
 catalog: c
 database: d
 configuration:
   bronze_schema: b
 libraries: []
-"""},
+"""
+        },
     )
     result = pytester.runpytest("--collect-only", "-p", "sdp_test")
     result.stdout.fnmatch_lines(["*no tests*"])

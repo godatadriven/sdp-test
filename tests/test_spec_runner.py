@@ -283,10 +283,7 @@ def test_model_query_strips_stream_wrapper() -> None:
 
 
 def test_model_query_strips_stream_wrapper_case_insensitive() -> None:
-    sql = (
-        "CREATE OR REFRESH STREAMING TABLE t AS\n"
-        "SELECT id FROM stream(silver.orders)"
-    )
+    sql = "CREATE OR REFRESH STREAMING TABLE t AS\nSELECT id FROM stream(silver.orders)"
     query = _model_query(sql)
     assert "stream(" not in query
     assert "STREAM(" not in query
@@ -314,21 +311,13 @@ def test_rewrite_qualify_no_qualify() -> None:
 
 def test_rewrite_qualify_ignores_nested_qualify() -> None:
     """QUALIFY inside a subquery should be rewritten by sqlglot too."""
-    query = (
-        "SELECT * FROM (\n"
-        "  SELECT id FROM t QUALIFY ROW_NUMBER() OVER (ORDER BY id) = 1\n"
-        ") sub"
-    )
+    query = "SELECT * FROM (\n  SELECT id FROM t QUALIFY ROW_NUMBER() OVER (ORDER BY id) = 1\n) sub"
     result = _rewrite_qualify(query)
     assert "QUALIFY" not in result
 
 
 def test_rewrite_qualify_with_alias_reference() -> None:
-    query = (
-        "SELECT id, ROW_NUMBER() OVER (PARTITION BY id ORDER BY ts DESC) AS rn\n"
-        "FROM events\n"
-        "QUALIFY rn = 1"
-    )
+    query = "SELECT id, ROW_NUMBER() OVER (PARTITION BY id ORDER BY ts DESC) AS rn\nFROM events\nQUALIFY rn = 1"
     result = _rewrite_qualify(query)
     assert "QUALIFY" not in result
     assert "WHERE" in result
@@ -775,8 +764,7 @@ def test_readstream_patch_is_restored_after_model(spark, tmp_path: Path) -> None
 def test_run_case_empty_expect(spark, tmp_path: Path) -> None:
     model_sql = tmp_path / "model_ee.sql"
     model_sql.write_text(
-        "CREATE MATERIALIZED VIEW ${silver_schema}.m AS\n"
-        "SELECT CAST(id AS STRING) AS id FROM ${bronze_schema}.src;"
+        "CREATE MATERIALIZED VIEW ${silver_schema}.m AS\nSELECT CAST(id AS STRING) AS id FROM ${bronze_schema}.src;"
     )
     case = {
         "name": "empty_expect",
@@ -850,10 +838,7 @@ def test_cases_from_pipeline_def_with_unit_tests(tmp_path: Path) -> None:
     sql_dir = tmp_path / "transformations" / "silver"
     sql_dir.mkdir(parents=True)
     sql_file = sql_dir / "my_model.sql"
-    sql_file.write_text(
-        "CREATE MATERIALIZED VIEW ${silver_schema}.my_model AS\n"
-        "SELECT id FROM ${bronze_schema}.src;"
-    )
+    sql_file.write_text("CREATE MATERIALIZED VIEW ${silver_schema}.my_model AS\nSELECT id FROM ${bronze_schema}.src;")
     unit_file = sql_dir / "my_model.unit_tests.yml"
     unit_file.write_text(
         "tests:\n"
@@ -886,12 +871,7 @@ def test_cases_from_pipeline_file_bad_bundle_fallback(tmp_path: Path) -> None:
     """When nearby databricks.yml can't be loaded, falls back to minimal context."""
     (tmp_path / "databricks.yml").write_text("not: valid: bundle: yaml:")
     pipeline_file = tmp_path / "spark-pipeline.yml"
-    pipeline_file.write_text(
-        "name: p\n"
-        "configuration:\n"
-        "  bronze_schema: b\n"
-        "libraries: []\n"
-    )
+    pipeline_file.write_text("name: p\nconfiguration:\n  bronze_schema: b\nlibraries: []\n")
     cases = spec_runner.cases_from_pipeline_file(pipeline_file)
     assert cases == []
 
@@ -1051,5 +1031,3 @@ def test_coerce_value_to_field_date_string() -> None:
     from datetime import date
 
     assert result == date(2024, 6, 15)
-
-
