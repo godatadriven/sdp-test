@@ -228,7 +228,9 @@ class SDPTestItem(pytest.Item):  # pragma: no cover – runs in subprocess via p
 
         # Lazily create a session-level temp dir via pytest's tmp_path_factory.
         if not hasattr(self.config, "_sdp_tmpdir"):
-            self.config._sdp_tmpdir = str(self.config._tmp_path_factory.mktemp("sdp_test"))  # ty: ignore[unresolved-attribute]
+            self.config._sdp_tmpdir = str(  # ty: ignore[unresolved-attribute]
+                self.config._tmp_path_factory.mktemp("sdp_test")  # ty: ignore[unresolved-attribute]
+            )
 
         spark = SparkSession.getActiveSession()
         if spark is None:
