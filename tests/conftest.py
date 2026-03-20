@@ -21,7 +21,9 @@ def spark(tmp_path_factory) -> Generator[SparkSession, None, None]:
     )
     spark_session.sparkContext.setLogLevel("WARN")
     jvm = spark_session._jvm
-    log_manager = jvm.org.apache.logging.log4j.LogManager
-    log_manager.getLogger("SQLQueryContextLogger").setLevel(jvm.org.apache.logging.log4j.Level.FATAL)
+    log_manager = jvm.org.apache.logging.log4j.LogManager  # ty: ignore[unresolved-attribute]
+    log_manager.getLogger("SQLQueryContextLogger").setLevel(
+        jvm.org.apache.logging.log4j.Level.FATAL  # ty: ignore[unresolved-attribute]
+    )
     yield spark_session
     spark_session.stop()

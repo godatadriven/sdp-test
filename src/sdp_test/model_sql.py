@@ -8,11 +8,30 @@ if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
 
 
+def _rewrite_qualify(query: str) -> str:
+    """Rewrite ``QUALIFY`` clauses for open-source Spark compatibility.
+
+    Uses sqlglot to parse the query as Databricks SQL and transpile it to
+    Spark SQL, which automatically eliminates ``QUALIFY`` by rewriting it
+    into an equivalent subquery with ``WHERE``.
+
+    Only invokes the SQL parser when the query actually contains QUALIFY.
+    """
+    if not re.search(r"\bQUALIFY\b", query, flags=re.IGNORECASE):
+        return query
+
+    import sqlglot
+
+    results = sqlglot.transpile(query, read="databricks", write="spark")
+    return results[0]
+
+
 def _model_query(sql_text: str) -> str:
     """Extract the SELECT query from a Lakeflow/DDL model SQL file.
 
     Also strips ``STREAM(table_ref)`` wrappers so that streaming-table
-    models can be tested with regular (batch) tables locally.
+    models can be tested with regular (batch) tables locally, and rewrites
+    ``QUALIFY`` clauses for open-source Spark compatibility.
     """
     match = re.search(r"\bAS\s+(?=(?:SELECT|WITH)\b)", sql_text, flags=re.IGNORECASE)
     if not match:
@@ -22,6 +41,8 @@ def _model_query(sql_text: str) -> str:
         query = query[:-1]
     # Replace STREAM(table_ref) with just table_ref for local batch execution.
     query = re.sub(r"\bSTREAM\s*\(([^)]+)\)", r"\1", query, flags=re.IGNORECASE)
+    # Rewrite QUALIFY clause for open-source Spark compatibility.
+    query = _rewrite_qualify(query)
     return query
 
 

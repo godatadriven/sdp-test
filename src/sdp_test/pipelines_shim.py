@@ -19,6 +19,7 @@ T = TypeVar("T")
 # Decorator shims — return the decorated function unchanged
 # ---------------------------------------------------------------------------
 
+
 def _noop_decorator(*args: Any, **kwargs: Any) -> Callable[[T], T] | T:
     """Decorator that accepts any arguments and returns the function as-is.
 
@@ -54,6 +55,7 @@ foreach_batch_sink = _noop_decorator
 # ---------------------------------------------------------------------------
 # Function shims — silently do nothing
 # ---------------------------------------------------------------------------
+
 
 def create_streaming_table(*args: Any, **kwargs: Any) -> None:
     """No-op replacement for ``dp.create_streaming_table(...)``."""

@@ -25,6 +25,7 @@ classifiers = [
 dependencies = [
     "pyyaml",
     "pydantic>=2.10.0",
+    "sqlglot>=30.0.3",
 ]
 
 [project.optional-dependencies]
@@ -45,6 +46,7 @@ dev = [
     "pyspark[pipelines]>=4.1",
     "pytest",
     "ruff",
+    "ty>=0.0.21",
     "pre-commit>=4.0",
     "pytest-cov>=7.0.0",
 ]
@@ -61,6 +63,9 @@ log_cli = true
 log_cli_level = "INFO"
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ty.environment]
+python = ".venv"
 
 [tool.ruff]
 line-length = 120

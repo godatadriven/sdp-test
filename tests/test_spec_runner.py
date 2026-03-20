@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from sdp_test import spec_runner
-from sdp_test.model_sql import _model_query, rows_as_dicts
+from sdp_test.model_sql import _model_query, _rewrite_qualify, rows_as_dicts
 from sdp_test.pipelines_shim import _noop_decorator
 from sdp_test.spec_models import PipelineEntrySpec, PipelineRefSpec, UnitSpec
 
@@ -282,6 +282,64 @@ def test_model_query_strips_stream_wrapper() -> None:
     assert "JOIN silver.products s" in query
 
 
+def test_model_query_strips_stream_wrapper_case_insensitive() -> None:
+    sql = "CREATE OR REFRESH STREAMING TABLE t AS\nSELECT id FROM stream(silver.orders)"
+    query = _model_query(sql)
+    assert "stream(" not in query
+    assert "STREAM(" not in query
+    assert "FROM silver.orders" in query
+
+
+def test_model_query_rewrites_qualify() -> None:
+    sql = (
+        "CREATE MATERIALIZED VIEW v AS\n"
+        "SELECT id, name, ts\n"
+        "FROM events\n"
+        "QUALIFY ROW_NUMBER() OVER (PARTITION BY id ORDER BY ts DESC) = 1"
+    )
+    query = _model_query(sql)
+    assert "QUALIFY" not in query
+    assert "WHERE" in query
+
+
+def test_rewrite_qualify_no_qualify() -> None:
+    query = "SELECT id, name FROM events"
+    result = _rewrite_qualify(query)
+    assert "QUALIFY" not in result
+    assert "WHERE" not in result
+
+
+def test_rewrite_qualify_ignores_nested_qualify() -> None:
+    """QUALIFY inside a subquery should be rewritten by sqlglot too."""
+    query = "SELECT * FROM (\n  SELECT id FROM t QUALIFY ROW_NUMBER() OVER (ORDER BY id) = 1\n) sub"
+    result = _rewrite_qualify(query)
+    assert "QUALIFY" not in result
+
+
+def test_rewrite_qualify_with_alias_reference() -> None:
+    query = "SELECT id, ROW_NUMBER() OVER (PARTITION BY id ORDER BY ts DESC) AS rn\nFROM events\nQUALIFY rn = 1"
+    result = _rewrite_qualify(query)
+    assert "QUALIFY" not in result
+    assert "WHERE" in result
+    assert "rn = 1" in result
+
+
+def test_rewrite_qualify_case_insensitive() -> None:
+    query = "SELECT id FROM t qualify row_number() over (order by id) = 1"
+    result = _rewrite_qualify(query)
+    assert "QUALIFY" not in result
+    assert "qualify" not in result
+    assert "WHERE" in result
+
+
+def test_rewrite_qualify_not_in_identifier() -> None:
+    """A column named 'qualify_status' should not trigger the rewrite."""
+    query = "SELECT qualify_status FROM t"
+    result = _rewrite_qualify(query)
+    assert "qualify_status" in result
+    assert "WHERE" not in result
+
+
 def test_rows_as_dicts_extracts_columns(spark) -> None:
     df = spark.createDataFrame([{"a": "1", "b": "2"}, {"a": "3", "b": "4"}])
     result = rows_as_dicts(df, ["a"])
@@ -300,7 +358,7 @@ def test_noop_decorator_without_parens() -> None:
     def my_func():
         return 42
 
-    assert my_func() == 42
+    assert my_func() == 42  # ty: ignore[call-non-callable, missing-argument]
 
 
 # ---------------------------------------------------------------------------
@@ -656,6 +714,49 @@ def test_run_python_model_not_callable(spark, tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# spec_runner: readStream redirected to batch read
+# ---------------------------------------------------------------------------
+
+
+def test_run_python_model_readstream_redirected(spark, tmp_path: Path) -> None:
+    """spark.readStream should be redirected to spark.read during Python model execution."""
+    model = tmp_path / "streaming_model.py"
+    model.write_text(
+        "from pyspark.sql import SparkSession\n"
+        "\n"
+        "def streaming_model():\n"
+        "    spark = SparkSession.builder.getOrCreate()\n"
+        "    return spark.readStream.table('src_table')\n"
+    )
+
+    # Register a batch table so readStream.table() (redirected to read.table()) can find it.
+    spark.createDataFrame([{"id": "1", "name": "Alice"}]).createOrReplaceTempView("src_table")
+
+    result_df = spec_runner._run_python_model(model, {})
+    rows = [row.asDict() for row in result_df.collect()]
+    assert rows == [{"id": "1", "name": "Alice"}]
+
+
+def test_readstream_patch_is_restored_after_model(spark, tmp_path: Path) -> None:
+    """The readStream property must be restored after Python model execution."""
+    from pyspark.sql import SparkSession
+
+    original_fget = SparkSession.readStream.fget
+
+    model = tmp_path / "simple_model.py"
+    model.write_text(
+        "from pyspark.sql import SparkSession\n"
+        "\n"
+        "def simple_model():\n"
+        "    spark = SparkSession.builder.getOrCreate()\n"
+        "    return spark.createDataFrame([{'x': 1}])\n"
+    )
+    spec_runner._run_python_model(model, {})
+
+    assert SparkSession.readStream.fget is original_fget
+
+
+# ---------------------------------------------------------------------------
 # spec_runner: run_case with empty expect
 # ---------------------------------------------------------------------------
 
@@ -663,8 +764,7 @@ def test_run_python_model_not_callable(spark, tmp_path: Path) -> None:
 def test_run_case_empty_expect(spark, tmp_path: Path) -> None:
     model_sql = tmp_path / "model_ee.sql"
     model_sql.write_text(
-        "CREATE MATERIALIZED VIEW ${silver_schema}.m AS\n"
-        "SELECT CAST(id AS STRING) AS id FROM ${bronze_schema}.src;"
+        "CREATE MATERIALIZED VIEW ${silver_schema}.m AS\nSELECT CAST(id AS STRING) AS id FROM ${bronze_schema}.src;"
     )
     case = {
         "name": "empty_expect",
@@ -738,10 +838,7 @@ def test_cases_from_pipeline_def_with_unit_tests(tmp_path: Path) -> None:
     sql_dir = tmp_path / "transformations" / "silver"
     sql_dir.mkdir(parents=True)
     sql_file = sql_dir / "my_model.sql"
-    sql_file.write_text(
-        "CREATE MATERIALIZED VIEW ${silver_schema}.my_model AS\n"
-        "SELECT id FROM ${bronze_schema}.src;"
-    )
+    sql_file.write_text("CREATE MATERIALIZED VIEW ${silver_schema}.my_model AS\nSELECT id FROM ${bronze_schema}.src;")
     unit_file = sql_dir / "my_model.unit_tests.yml"
     unit_file.write_text(
         "tests:\n"
@@ -774,12 +871,7 @@ def test_cases_from_pipeline_file_bad_bundle_fallback(tmp_path: Path) -> None:
     """When nearby databricks.yml can't be loaded, falls back to minimal context."""
     (tmp_path / "databricks.yml").write_text("not: valid: bundle: yaml:")
     pipeline_file = tmp_path / "spark-pipeline.yml"
-    pipeline_file.write_text(
-        "name: p\n"
-        "configuration:\n"
-        "  bronze_schema: b\n"
-        "libraries: []\n"
-    )
+    pipeline_file.write_text("name: p\nconfiguration:\n  bronze_schema: b\nlibraries: []\n")
     cases = spec_runner.cases_from_pipeline_file(pipeline_file)
     assert cases == []
 
@@ -939,5 +1031,3 @@ def test_coerce_value_to_field_date_string() -> None:
     from datetime import date
 
     assert result == date(2024, 6, 15)
-
-
