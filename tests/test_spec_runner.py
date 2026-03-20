@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
@@ -283,6 +282,17 @@ def test_model_query_strips_stream_wrapper() -> None:
     assert "JOIN silver.products s" in query
 
 
+def test_model_query_strips_stream_wrapper_case_insensitive() -> None:
+    sql = (
+        "CREATE OR REFRESH STREAMING TABLE t AS\n"
+        "SELECT id FROM stream(silver.orders)"
+    )
+    query = _model_query(sql)
+    assert "stream(" not in query
+    assert "STREAM(" not in query
+    assert "FROM silver.orders" in query
+
+
 def test_model_query_rewrites_qualify() -> None:
     sql = (
         "CREATE MATERIALIZED VIEW v AS\n"
@@ -291,27 +301,26 @@ def test_model_query_rewrites_qualify() -> None:
         "QUALIFY ROW_NUMBER() OVER (PARTITION BY id ORDER BY ts DESC) = 1"
     )
     query = _model_query(sql)
-    # The top-level QUALIFY keyword should be gone (only _sdp_qualify_cond remains).
-    assert re.search(r"\bQUALIFY\b(?!_)", query, re.IGNORECASE) is None
-    assert "_sdp_qualify_cond" in query
-    assert "WHERE _sdp_qualify_cond" in query
+    assert "QUALIFY" not in query
+    assert "WHERE" in query
 
 
 def test_rewrite_qualify_no_qualify() -> None:
     query = "SELECT id, name FROM events"
-    assert _rewrite_qualify(query) == query
+    result = _rewrite_qualify(query)
+    assert "QUALIFY" not in result
+    assert "WHERE" not in result
 
 
 def test_rewrite_qualify_ignores_nested_qualify() -> None:
-    """QUALIFY inside a subquery should not be rewritten."""
+    """QUALIFY inside a subquery should be rewritten by sqlglot too."""
     query = (
         "SELECT * FROM (\n"
         "  SELECT id FROM t QUALIFY ROW_NUMBER() OVER (ORDER BY id) = 1\n"
         ") sub"
     )
-    # The QUALIFY is inside parentheses, so it should NOT be matched at top level.
     result = _rewrite_qualify(query)
-    assert result == query
+    assert "QUALIFY" not in result
 
 
 def test_rewrite_qualify_with_alias_reference() -> None:
@@ -321,21 +330,25 @@ def test_rewrite_qualify_with_alias_reference() -> None:
         "QUALIFY rn = 1"
     )
     result = _rewrite_qualify(query)
-    assert re.search(r"\bQUALIFY\b(?!_)", result, re.IGNORECASE) is None
-    assert "WHERE _sdp_qualify_cond" in result
+    assert "QUALIFY" not in result
+    assert "WHERE" in result
+    assert "rn = 1" in result
 
 
 def test_rewrite_qualify_case_insensitive() -> None:
     query = "SELECT id FROM t qualify row_number() over (order by id) = 1"
     result = _rewrite_qualify(query)
-    assert re.search(r"\bqualify\b(?!_)", result, re.IGNORECASE) is None
-    assert "WHERE _sdp_qualify_cond" in result
+    assert "QUALIFY" not in result
+    assert "qualify" not in result
+    assert "WHERE" in result
 
 
 def test_rewrite_qualify_not_in_identifier() -> None:
     """A column named 'qualify_status' should not trigger the rewrite."""
     query = "SELECT qualify_status FROM t"
-    assert _rewrite_qualify(query) == query
+    result = _rewrite_qualify(query)
+    assert "qualify_status" in result
+    assert "WHERE" not in result
 
 
 def test_rows_as_dicts_extracts_columns(spark) -> None:

@@ -9,38 +9,21 @@ if TYPE_CHECKING:
 
 
 def _rewrite_qualify(query: str) -> str:
-    """Rewrite ``QUALIFY <expr> <op> <value>`` into a subquery with ``WHERE``.
+    """Rewrite ``QUALIFY`` clauses for open-source Spark compatibility.
 
-    Open-source Spark does not support the ``QUALIFY`` clause.  This function
-    emulates it by wrapping the original query in a subquery, projecting the
-    qualify expression as a hidden column, and filtering with ``WHERE``.
+    Uses sqlglot to parse the query as Databricks SQL and transpile it to
+    Spark SQL, which automatically eliminates ``QUALIFY`` by rewriting it
+    into an equivalent subquery with ``WHERE``.
+
+    Only invokes the SQL parser when the query actually contains QUALIFY.
     """
-    # Flatten nested parentheses by replacing innermost (...) groups with
-    # spaces of equal length.  This preserves character positions so that a
-    # simple regex can find top-level QUALIFY without a manual depth loop.
-    flattened = query
-    while True:
-        replaced = re.sub(r"\([^()]*\)", lambda m: " " * len(m.group()), flattened)
-        if replaced == flattened:
-            break
-        flattened = replaced
-
-    match = re.search(r"\bQUALIFY\b", flattened, flags=re.IGNORECASE)
-    if match is None:
+    if not re.search(r"\bQUALIFY\b", query, flags=re.IGNORECASE):
         return query
 
-    inner_query = query[: match.start()].rstrip()
-    qualify_expr = query[match.end() :].strip()
+    import sqlglot
 
-    return (
-        f"SELECT * FROM (\n"
-        f"  SELECT *, {qualify_expr} AS _sdp_qualify_cond\n"
-        f"  FROM (\n"
-        f"    {inner_query}\n"
-        f"  ) _sdp_inner\n"
-        f") _sdp_qualified\n"
-        f"WHERE _sdp_qualify_cond"
-    )
+    results = sqlglot.transpile(query, read="databricks", write="spark")
+    return results[0]
 
 
 def _model_query(sql_text: str) -> str:

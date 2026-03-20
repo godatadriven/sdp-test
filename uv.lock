@@ -1035,6 +1035,7 @@ source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "sqlglot" },
 ]
 
 [package.optional-dependencies]
@@ -1057,6 +1058,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "pyspark", extras = ["pipelines"], marker = "extra == 'spark'", specifier = ">=4.1" },
     { name = "pyyaml" },
+    { name = "sqlglot", specifier = ">=30.0.3" },
 ]
 provides-extras = ["spark"]
 
@@ -1077,6 +1079,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68a0e064b6af791aa332cf192da575fd474ed7d6f16a2/six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81", size = 34031, upload-time = "2024-12-04T17:35:28.174Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
+]
+
+[[package]]
+name = "sqlglot"
+version = "30.0.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5b/7a/3b6a8853fc2fa166f785a8ea4fecde46f70588e35471bc7811373da31a49/sqlglot-30.0.3.tar.gz", hash = "sha256:35ba7514c132b54f87fd1732a65a73615efa9fd83f6e1eed0a315bc9ee3e1027", size = 5802632, upload-time = "2026-03-19T16:51:39.166Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c6/13/b57ab75b0f60b5ee8cb8924bc01a5c419ed3221e00f8f11f8c059a707eb7/sqlglot-30.0.3-py3-none-any.whl", hash = "sha256:5489cc98b5666f1fafc21e0304ca286e513e142aa054ee5760806a2139d07a05", size = 651853, upload-time = "2026-03-19T16:51:36.241Z" },
 ]
 
 [[package]]
