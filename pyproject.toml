@@ -1,6 +1,6 @@
 [project]
 name = "sdp-test"
-version = "0.3.0"
+version = "0.3.1"
 description = "Declarative unit testing for Spark Declarative Pipelines (SDP) and Lakeflow Declarative Pipelines (LDP)"
 readme = "README.md"
 license = "Apache-2.0"
