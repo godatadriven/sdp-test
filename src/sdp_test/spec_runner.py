@@ -220,15 +220,16 @@ def case_id(spec_file: Path, case: dict[str, Any]) -> str:
 
 
 def _create_df_with_fallback_schema(spark, rows: list[dict[str, Any]], column_types: dict[str, str] | None = None):
-    """Create a DataFrame from row dicts, falling back to explicit schema when inference fails.
+    """Create a DataFrame from row dicts, optionally with explicit column types.
 
-    Spark cannot determine the type of a column when every value is ``None``.
-    This helper catches the ``CANNOT_DETERMINE_TYPE`` error and retries with an
-    explicit schema that defaults null-only columns to ``StringType``.
+    When *column_types* is provided, an explicit schema is built: specified
+    types take precedence, unspecified columns are inferred from data.
+    Variant columns are serialised to JSON strings before DataFrame creation
+    and converted via ``parse_json()`` afterwards.
 
-    When *column_types* is provided, columns declared as ``"variant"`` are
-    serialised to JSON strings before DataFrame creation and then converted
-    via ``parse_json()`` afterwards.
+    When *column_types* is not provided, Spark infers the schema.  If inference
+    fails (e.g. all-null columns), a fallback schema defaults those columns to
+    ``StringType``.
     """
     import json as _json
 
@@ -238,45 +239,50 @@ def _create_df_with_fallback_schema(spark, rows: list[dict[str, Any]], column_ty
     column_types = column_types or {}
     variant_cols = {col for col, typ in column_types.items() if typ.lower() == "variant"}
 
-    # Pre-process: serialise variant columns to JSON strings so Spark can
-    # infer the rest of the schema normally.
+    # Pre-process: serialise variant columns to JSON strings.
     if variant_cols:
         rows = [
             {k: _json.dumps(v) if k in variant_cols and v is not None else v for k, v in row.items()} for row in rows
         ]
 
-    try:
-        df = spark.createDataFrame(rows)
-    except Exception:  # noqa: BLE001
-        # Build explicit schema: infer non-null types via a single-row probe,
-        # default null-only columns to StringType.
+    if column_types:
+        # Build explicit schema: specified types take precedence, rest inferred.
         columns = list(rows[0].keys())
         fields: list[StructField] = []
         for col in columns:
-            if col in column_types and column_types[col].lower() != "variant":
-                fields.append(StructField(col, _parse_datatype_string(column_types[col]), True))
-                continue
-
-            sample = next((r[col] for r in rows if r.get(col) is not None), None)
-            if sample is None:
+            if col in variant_cols:
                 fields.append(StructField(col, StringType(), True))
+            elif col in column_types:
+                fields.append(StructField(col, _parse_datatype_string(column_types[col]), True))
             else:
-                # Let Spark infer the type from a single non-null value.
-                probe = spark.createDataFrame([{col: sample}])
-                fields.append(StructField(col, probe.schema[0].dataType, True))
+                sample = next((r[col] for r in rows if r.get(col) is not None), None)
+                if sample is None:
+                    fields.append(StructField(col, StringType(), True))
+                else:
+                    probe = spark.createDataFrame([{col: sample}])
+                    fields.append(StructField(col, probe.schema[0].dataType, True))
         df = spark.createDataFrame(rows, schema=StructType(fields))
-
-    # Post-process: cast columns with explicit (non-variant) types.
-    typed_cols = {col: typ for col, typ in column_types.items() if typ.lower() != "variant"}
-    for col, typ in typed_cols.items():
-        if col in df.columns:
-            df = df.withColumn(col, sf.col(col).cast(typ))
+    else:
+        # No column_types: let Spark infer everything.
+        try:
+            df = spark.createDataFrame(rows)
+        except Exception:  # noqa: BLE001
+            # Fallback for all-null columns: default to StringType.
+            columns = list(rows[0].keys())
+            fields = []
+            for col in columns:
+                sample = next((r[col] for r in rows if r.get(col) is not None), None)
+                if sample is None:
+                    fields.append(StructField(col, StringType(), True))
+                else:
+                    probe = spark.createDataFrame([{col: sample}])
+                    fields.append(StructField(col, probe.schema[0].dataType, True))
+            df = spark.createDataFrame(rows, schema=StructType(fields))
 
     # Post-process: convert JSON strings to VARIANT via parse_json().
-    if variant_cols:
-        for col in variant_cols:
-            if col in df.columns:
-                df = df.withColumn(col, sf.parse_json(sf.col(col)))
+    for col in variant_cols:
+        if col in df.columns:
+            df = df.withColumn(col, sf.parse_json(sf.col(col)))
 
     return df
 

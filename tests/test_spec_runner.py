@@ -1004,7 +1004,7 @@ def test_coerce_value_to_field_timestamp_string() -> None:
 
 def test_create_df_with_fallback_schema_explicit_column_types(spark) -> None:
     """When column_types specifies a type (non-variant), the schema uses that type."""
-    rows = [{"id": "1", "amount": "100", "flag": "true"}]
+    rows = [{"id": "1", "amount": 100, "flag": True}]
     column_types = {"amount": "int", "flag": "boolean"}
     df = spec_runner._create_df_with_fallback_schema(spark, rows, column_types)
 
@@ -1031,3 +1031,125 @@ def test_coerce_value_to_field_date_string() -> None:
     from datetime import date
 
     assert result == date(2024, 6, 15)
+
+
+# ---------------------------------------------------------------------------
+# _create_df_with_fallback_schema: complex column types (map, struct, variant)
+#
+# All tests use the same "address" data shape — a single address dict and a
+# list of addresses — to show every type interpretation side by side.
+# ---------------------------------------------------------------------------
+
+_ADDRESS = {"street": "Main St", "city": "Amsterdam"}
+_ADDRESS_ROWS = [
+    {"id": "1", "address": _ADDRESS},
+    {"id": "2", "address": None},
+]
+_ADDRESSES_ROWS = [
+    {"id": "1", "addresses": [_ADDRESS, {"street": "Keizersgracht", "city": "Amsterdam"}]},
+    {"id": "2", "addresses": []},
+]
+
+
+# -- No schema: Spark infers MapType / ArrayType(MapType) -------------------
+
+
+def test_create_df_complex_column_no_schema_inferred_as_map(spark) -> None:
+    """Without explicit schema, a nested dict is inferred as MapType."""
+    from pyspark.sql.types import MapType
+
+    df = spec_runner._create_df_with_fallback_schema(spark, _ADDRESS_ROWS)
+
+    schema_map = {f.name: f.dataType for f in df.schema.fields}
+    assert isinstance(schema_map["address"], MapType)
+
+    result = df.collect()
+    assert result[0]["address"]["street"] == "Main St"
+    assert result[1]["address"] is None
+
+
+def test_create_df_complex_column_no_schema_inferred_as_array_of_maps(spark) -> None:
+    """Without explicit schema, a list of dicts is inferred as ArrayType(MapType)."""
+    from pyspark.sql.types import ArrayType, MapType
+
+    df = spec_runner._create_df_with_fallback_schema(spark, _ADDRESSES_ROWS)
+
+    schema_map = {f.name: f.dataType for f in df.schema.fields}
+    assert isinstance(schema_map["addresses"], ArrayType)
+    assert isinstance(schema_map["addresses"].elementType, MapType)
+
+    result = df.collect()
+    assert result[0]["addresses"][0]["street"] == "Main St"
+    assert len(result[1]["addresses"]) == 0
+
+
+# -- Explicit struct schema -------------------------------------------------
+
+
+def test_create_df_complex_column_as_struct(spark) -> None:
+    """With explicit struct schema, a nested dict becomes StructType."""
+    from pyspark.sql.types import StringType, StructType
+
+    column_types = {"address": "struct<street:string,city:string>"}
+    df = spec_runner._create_df_with_fallback_schema(spark, _ADDRESS_ROWS, column_types)
+
+    addr_type = {f.name: f.dataType for f in df.schema.fields}["address"]
+    assert isinstance(addr_type, StructType)
+    addr_fields = {f.name: f.dataType for f in addr_type.fields}
+    assert isinstance(addr_fields["street"], StringType)
+    assert isinstance(addr_fields["city"], StringType)
+
+    result = df.collect()
+    assert result[0]["address"]["street"] == "Main St"
+    assert result[1]["address"] is None
+
+
+def test_create_df_complex_column_as_array_of_structs(spark) -> None:
+    """With explicit array<struct> schema, a list of dicts becomes ArrayType(StructType)."""
+    from pyspark.sql.types import ArrayType, StringType, StructType
+
+    column_types = {"addresses": "array<struct<street:string,city:string>>"}
+    df = spec_runner._create_df_with_fallback_schema(spark, _ADDRESSES_ROWS, column_types)
+
+    arr_type = {f.name: f.dataType for f in df.schema.fields}["addresses"]
+    assert isinstance(arr_type, ArrayType)
+    assert isinstance(arr_type.elementType, StructType)
+    elem_fields = {f.name: f.dataType for f in arr_type.elementType.fields}
+    assert isinstance(elem_fields["street"], StringType)
+    assert isinstance(elem_fields["city"], StringType)
+
+    result = df.collect()
+    assert result[0]["addresses"][0]["street"] == "Main St"
+    assert len(result[1]["addresses"]) == 0
+
+
+# -- Explicit variant schema ------------------------------------------------
+
+
+def test_create_df_complex_column_as_variant(spark) -> None:
+    """With explicit variant schema, a nested dict becomes VariantType."""
+    column_types = {"address": "variant"}
+    df = spec_runner._create_df_with_fallback_schema(spark, _ADDRESS_ROWS, column_types)
+
+    schema_map = {f.name: f.dataType for f in df.schema.fields}
+    assert str(schema_map["address"]).lower() == "varianttype()"
+
+    result = df.collect()
+    assert result[0]["address"] is not None
+    assert result[1]["address"] is None
+
+
+def test_create_df_complex_column_as_array_of_variants(spark) -> None:
+    """With explicit array<variant> schema, a list becomes ArrayType(VariantType)."""
+    # Each address list is serialised as a single variant (the whole list).
+    rows = [
+        {"id": "1", "addresses": [_ADDRESS, {"street": "Keizersgracht", "city": "Amsterdam"}]},
+    ]
+    column_types = {"addresses": "variant"}
+    df = spec_runner._create_df_with_fallback_schema(spark, rows, column_types)
+
+    schema_map = {f.name: f.dataType for f in df.schema.fields}
+    assert str(schema_map["addresses"]).lower() == "varianttype()"
+
+    result = df.collect()
+    assert result[0]["addresses"] is not None
