@@ -30,6 +30,11 @@ derby.log
 metastore_db/
 spark-warehouse/
 
+# Claude private docs
+.private/
+CLAUDE.md
+.claude
+
 # OS
 .DS_Store
 Thumbs.db
