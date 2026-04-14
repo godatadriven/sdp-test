@@ -41,6 +41,10 @@ class TestCaseSpec(BaseModel):
         default=None,
         description="Optional per-test log level: DEBUG, INFO, WARN, ERROR, NONE.",
     )
+    spark_conf: dict[str, str] = Field(
+        default_factory=dict,
+        description="Arbitrary Spark configuration entries to set before running the model.",
+    )
     given: list[GivenInputSpec] = Field(default_factory=list, description="Input fixtures for referenced tables.")
     expect: ExpectSpec = Field(default_factory=ExpectSpec, description="Expected query result rows.")
 

@@ -336,8 +336,8 @@ def run_case(spark, case: dict[str, Any]) -> CaseResult:
 
     model_path = _model_path(case)
     logger.debug("Executing model: %s", model_path)
+    _set_model_runtime_conf(spark, case)
     if model_path.suffix.lower() == ".py":
-        _set_model_runtime_conf(spark, case)
         result_df = _run_python_model(model_path, case)
     else:
         query = render_model_query(str(model_path), _schema_map_from_case(case))
@@ -704,6 +704,8 @@ def _set_model_runtime_conf(spark, case: dict[str, Any]) -> None:
     for key in ("bronze_schema", "silver_schema", "gold_schema", "source_base_path"):
         if case.get(key):
             spark.conf.set(key, case[key])
+    for key, value in (case.get("spark_conf") or {}).items():
+        spark.conf.set(key, value)
 
 
 def _patch_readstream():
@@ -723,6 +725,32 @@ def _patch_readstream():
 
     def _restore():
         SparkSession.readStream = property(original_property)
+
+    return _restore
+
+
+def _patch_qualify_sql():
+    """Monkey-patch ``SparkSession.sql`` to rewrite QUALIFY clauses for local testing.
+
+    Open-source PySpark does not support the QUALIFY clause (a Databricks SQL
+    extension).  This patch applies the same ``_rewrite_qualify`` transpilation
+    used for ``.sql`` model files so that Python models calling ``spark.sql()``
+    with QUALIFY also work locally.
+
+    Returns a callable that restores the original method.
+    """
+    from pyspark.sql import SparkSession
+    from .model_sql import _rewrite_qualify
+
+    original_sql = SparkSession.sql
+
+    def _patched_sql(self, sqlQuery, *args, **kwargs):
+        return original_sql(self, _rewrite_qualify(sqlQuery), *args, **kwargs)
+
+    SparkSession.sql = _patched_sql  # ty: ignore[invalid-assignment]
+
+    def _restore():
+        SparkSession.sql = original_sql
 
     return _restore
 
@@ -766,6 +794,9 @@ def _run_python_model(model_path: Path, case: dict[str, Any]):
     # Redirect spark.readStream to spark.read so streaming models can run
     # locally as batch queries (mirrors STREAM() stripping for SQL models).
     restore_readstream = _patch_readstream()
+    # Rewrite QUALIFY clauses in spark.sql() calls, mirroring the transpilation
+    # already applied to .sql model files.
+    restore_qualify_sql = _patch_qualify_sql()
     try:
         spec.loader.exec_module(module)
 
@@ -778,6 +809,7 @@ def _run_python_model(model_path: Path, case: dict[str, Any]):
 
         return model_callable()
     finally:
+        restore_qualify_sql()
         restore_readstream()
         if saved_pipelines_module is not None:  # pragma: no cover – Databricks runtime only
             sys.modules["pyspark.pipelines"] = saved_pipelines_module
