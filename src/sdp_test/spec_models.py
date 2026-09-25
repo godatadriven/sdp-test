@@ -10,7 +10,12 @@ class GivenInputSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    table: str = Field(description="Schema-qualified input table name, e.g. bronze.raw_stores.")
+    table: str = Field(
+        description=(
+            "Input table name, optionally schema- or catalog-qualified, "
+            "e.g. bronze.raw_stores or main.bronze.raw_stores."
+        )
+    )
     rows: list[dict[str, Any]] = Field(default_factory=list, description="Input rows for the table.")
     schema: dict[str, str] = Field(  # noqa: A003
         default_factory=dict,

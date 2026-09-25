@@ -96,10 +96,56 @@ tests:
 
 ### Key rules
 
-- **`table` must be schema-qualified** — e.g. `${bronze_schema}.raw_customers`
+- **`table` must be schema-qualified** — e.g. `${bronze_schema}.raw_customers`, or catalog-qualified with `${catalog}.${bronze_schema}.raw_customers` (see [Three-part identifiers](#three-part-identifiers))
 - **`model` is relative to the test file** — `stg_customers.sql` resolves from the same directory
 - **Only listed columns are checked** — you don't need to specify every output column
 - **One model per `.sql` file** — the SDP convention
+
+### Three-part identifiers
+
+Fixtures and models may name a catalog: `${catalog}.${bronze_schema}.raw_customers` works anywhere a
+table name is accepted, in both SQL and Python models.
+
+Local Spark exposes only its session catalog, which accepts a single namespace part, so the catalog is
+**stripped** for local execution. `main.bronze.raw_customers` is registered as `bronze.raw_customers`, and
+the same prefix is removed from model SQL, from `spark.sql()` calls and from `spark.read.table()` /
+`spark.table()` reads in Python models. Your model source keeps the catalog — nothing needs to change for
+production.
+
+Because both forms collapse to the same local table, two- and three-part references interoperate: a fixture
+written `${catalog}.${bronze_schema}.raw` works against a model that reads `${bronze_schema}.raw`, and vice
+versa.
+
+#### Reading from two catalogs at once
+
+Fixtures that differ **only** by catalog would collide under stripping, so those — and only those — keep
+their catalog, folded into the local schema name. A model can then read both:
+
+```yaml
+given:
+  - table: cat_a.sales.orders     # registered locally as cat_a__sales.orders
+    rows: [{ id: "a1" }]
+  - table: cat_b.sales.orders     # registered locally as cat_b__sales.orders
+    rows: [{ id: "b1" }]
+```
+
+```sql
+SELECT id, 'a' AS src FROM cat_a.sales.orders
+UNION ALL
+SELECT id, 'b' AS src FROM cat_b.sales.orders
+```
+
+Folding is decided per test case and applies only to the colliding names — every other fixture still has
+its catalog stripped, so the two- and three-part interop above is unaffected.
+
+Two cases are rejected, because nothing could make them unambiguous:
+
+- the model reads the bare `sales.orders` while both catalogs are present — qualify the reference;
+- two colliding fixtures where one names no catalog (`cat_a.sales.orders` and `sales.orders`) — there is
+  nothing to fold, so give both a catalog or rename one.
+
+Finally, a configured schema may itself carry a catalog, e.g. `bronze_schema: main.bronze`. The value is
+passed to Python models verbatim, and stripped when it reaches Spark.
 
 ### SQL models
 
@@ -354,8 +400,12 @@ Variables use `${...}` syntax and resolve from the pipeline configuration and bu
 | Variable | Source |
 |---|---|
 | `${bronze_schema}` | Pipeline `configuration` |
+| `${catalog}` | Pipeline `catalog` |
 | `${var.catalog}` | Bundle `variables` |
 | `${bundle.target}` | Bundle metadata |
+
+`${catalog}` used as a qualifier (`${catalog}.${bronze_schema}.raw`) is dropped for local execution, so the
+same model SQL works whether or not the pipeline defines a catalog.
 
 Variables can refer to other variables, so the result of a single variable resolution can still contain unresolved variables. By default variable resolution is repeated with the result untill there are no more changes in the result object, with a maximum of 5 iterations. The maximum number of interations can be increased or decreased with the `variable_resolution_depth` configuration parameter.
 
