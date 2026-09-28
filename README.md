@@ -96,7 +96,7 @@ tests:
 
 ### Key rules
 
-- **`table` must be schema-qualified** — e.g. `${bronze_schema}.raw_customers`, or catalog-qualified with `${catalog}.${bronze_schema}.raw_customers` (see [Three-part identifiers](#three-part-identifiers))
+- **`table` must be catalog- or schema-qualified** — e.g. `${catalog}.${bronze_schema}.raw_customers` or `${bronze_schema}.raw_customers` (see [Three-part identifiers](#three-part-identifiers))
 - **`model` is relative to the test file** — `stg_customers.sql` resolves from the same directory
 - **Only listed columns are checked** — you don't need to specify every output column
 - **One model per `.sql` file** — the SDP convention
