@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from sdp_test import spec_runner
-from sdp_test.model_sql import _model_query, _rewrite_qualify, rows_as_dicts
+from sdp_test.model_sql import _model_query, _rewrite_qualify, render_model_query, rows_as_dicts
 from sdp_test.pipelines_shim import _noop_decorator
 from sdp_test.spec_models import PipelineEntrySpec, PipelineRefSpec, UnitSpec
 
@@ -1153,3 +1153,348 @@ def test_create_df_complex_column_as_array_of_variants(spark) -> None:
 
     result = df.collect()
     assert result[0]["addresses"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Three-part identifiers: catalog.schema.table
+# ---------------------------------------------------------------------------
+
+
+def test_model_query_strips_catalog_from_three_part_name() -> None:
+    query = _model_query("CREATE MATERIALIZED VIEW m AS\nSELECT id FROM main.bronze.raw;")
+    assert query == "SELECT id FROM bronze.raw"
+
+
+def test_model_query_strips_catalog_before_rewriting_qualify() -> None:
+    """The QUALIFY transpile must see two-part names, so it cannot re-emit a catalog."""
+    query = _model_query(
+        "CREATE MATERIALIZED VIEW m AS\n"
+        "SELECT id FROM main.bronze.raw\n"
+        "QUALIFY ROW_NUMBER() OVER (PARTITION BY id ORDER BY ts) = 1;"
+    )
+    assert "main." not in query
+    assert "bronze.raw" in query
+    assert "QUALIFY" not in query.upper()
+
+
+def test_render_model_query_substitutes_catalog_placeholder(tmp_path: Path) -> None:
+    model = tmp_path / "m.sql"
+    model.write_text("CREATE MATERIALIZED VIEW m AS\nSELECT id FROM ${catalog}.${bronze_schema}.raw;")
+
+    query = render_model_query(str(model), {"catalog": "main", "bronze_schema": "bronze"}, catalogs={"main"})
+
+    assert query == "SELECT id FROM bronze.raw"
+
+
+def test_render_model_query_elides_catalog_prefix_when_undefined(tmp_path: Path) -> None:
+    """With no catalog configured, ``${catalog}.`` must not reach Spark unresolved.
+
+    This is the case ``rewrite_table_references`` structurally cannot handle: the
+    placeholder is never substituted (``_schema_map_from_case`` keeps string
+    values only), and ``${catalog}`` is not a legal SQL identifier, so no strip
+    rule matches it.  Only the pre-substitution elision in
+    :func:`render_model_query` can remove it.
+    """
+    model = tmp_path / "m.sql"
+    model.write_text("CREATE MATERIALIZED VIEW m AS\nSELECT id FROM ${catalog}.${bronze_schema}.raw;")
+
+    query = render_model_query(str(model), {"bronze_schema": "bronze"})
+
+    assert query == "SELECT id FROM bronze.raw"
+    assert "${catalog}" not in query
+
+
+def test_render_model_query_substitutes_bare_catalog_reference(tmp_path: Path) -> None:
+    """A ``${catalog}`` not used as a qualifier still substitutes normally."""
+    model = tmp_path / "m.sql"
+    model.write_text("CREATE MATERIALIZED VIEW m AS\nSELECT '${catalog}' AS src FROM bronze.raw;")
+
+    query = render_model_query(str(model), {"catalog": "main"}, catalogs={"main"})
+
+    assert query == "SELECT 'main' AS src FROM bronze.raw"
+
+
+def test_catalog_names_from_case_collects_every_source() -> None:
+    assert spec_runner._catalog_names_from_case({"catalog": "main"}) == {"main"}
+    assert spec_runner._catalog_names_from_case({"given": [{"table": "other.bronze.raw"}]}) == {"other"}
+    assert spec_runner._catalog_names_from_case({"bronze_schema": "cfg.bronze"}) == {"cfg"}
+    assert spec_runner._catalog_names_from_case({}) == set()
+
+
+def test_catalog_names_from_case_ignores_missing_catalog() -> None:
+    case = {"catalog": None, "given": [{"table": "bronze.raw"}], "bronze_schema": "bronze"}
+    assert spec_runner._catalog_names_from_case(case) == set()
+
+
+def test_clear_schemas_normalises_catalog_qualified_name(spark) -> None:
+    """A catalog-qualified value must not reach Spark as a database name."""
+    spark.sql("CREATE DATABASE IF NOT EXISTS cs_bronze")
+    spec_runner._clear_schemas(spark, {"cs_cat.cs_bronze"})
+    assert "cs_bronze" not in [db.name for db in spark.catalog.listDatabases()]
+
+
+def test_run_case_three_part_given_and_three_part_model(spark, tmp_path: Path) -> None:
+    model_sql = tmp_path / "tp_model.sql"
+    model_sql.write_text(
+        "CREATE OR REFRESH MATERIALIZED VIEW ${catalog}.${silver_schema}.tp_model AS\n"
+        "SELECT CAST(id AS STRING) AS id FROM ${catalog}.${bronze_schema}.raw_input;"
+    )
+    case = {
+        "name": "three_part",
+        "catalog": "tp_cat",
+        "bronze_schema": "tp_bronze",
+        "silver_schema": "tp_silver",
+        "model": str(model_sql),
+        "given": [{"table": "tp_cat.tp_bronze.raw_input", "rows": [{"id": "1"}, {"id": "2"}]}],
+        "expect": {"rows": [{"id": "1"}, {"id": "2"}]},
+    }
+
+    result = spec_runner.run_case(spark, case)
+
+    assert (result.left_minus_right, result.right_minus_left) == (0, 0)
+
+
+def test_run_case_three_part_given_with_two_part_model(spark, tmp_path: Path) -> None:
+    """A catalog-qualified fixture resolves for a model that omits the catalog."""
+    model_sql = tmp_path / "mix_a_model.sql"
+    model_sql.write_text(
+        "CREATE OR REFRESH MATERIALIZED VIEW ${silver_schema}.mix_a_model AS\n"
+        "SELECT CAST(id AS STRING) AS id FROM ${bronze_schema}.raw_input;"
+    )
+    case = {
+        "name": "mixed_arity_a",
+        "catalog": "ma_cat",
+        "bronze_schema": "ma_bronze",
+        "silver_schema": "ma_silver",
+        "model": str(model_sql),
+        "given": [{"table": "ma_cat.ma_bronze.raw_input", "rows": [{"id": "1"}]}],
+        "expect": {"rows": [{"id": "1"}]},
+    }
+
+    result = spec_runner.run_case(spark, case)
+
+    assert (result.left_minus_right, result.right_minus_left) == (0, 0)
+
+
+def test_run_case_two_part_given_with_three_part_model(spark, tmp_path: Path) -> None:
+    """An unqualified fixture resolves for a model that names the catalog."""
+    model_sql = tmp_path / "mix_b_model.sql"
+    model_sql.write_text(
+        "CREATE OR REFRESH MATERIALIZED VIEW ${silver_schema}.mix_b_model AS\n"
+        "SELECT CAST(id AS STRING) AS id FROM mb_cat.${bronze_schema}.raw_input;"
+    )
+    case = {
+        "name": "mixed_arity_b",
+        "bronze_schema": "mb_bronze",
+        "silver_schema": "mb_silver",
+        "model": str(model_sql),
+        "given": [{"table": "mb_bronze.raw_input", "rows": [{"id": "1"}]}],
+        "expect": {"rows": [{"id": "1"}]},
+    }
+
+    result = spec_runner.run_case(spark, case)
+
+    assert (result.left_minus_right, result.right_minus_left) == (0, 0)
+
+
+def test_run_case_schema_value_carrying_a_catalog(spark, tmp_path: Path) -> None:
+    """``bronze_schema: cat.bronze`` must resolve, and must not break cleanup."""
+    model_sql = tmp_path / "sv_model.sql"
+    model_sql.write_text(
+        "CREATE OR REFRESH MATERIALIZED VIEW sv_silver.sv_model AS\n"
+        "SELECT CAST(id AS STRING) AS id FROM ${bronze_schema}.raw_input;"
+    )
+    case = {
+        "name": "schema_value_with_catalog",
+        "bronze_schema": "sv_cat.sv_bronze",
+        "silver_schema": "sv_silver",
+        "model": str(model_sql),
+        "given": [{"table": "sv_cat.sv_bronze.raw_input", "rows": [{"id": "1"}]}],
+        "expect": {"rows": [{"id": "1"}]},
+    }
+
+    result = spec_runner.run_case(spark, case)
+
+    assert (result.left_minus_right, result.right_minus_left) == (0, 0)
+
+
+def test_run_case_rejects_unqualified_read_of_folded_tables(spark, tmp_path: Path) -> None:
+    """Folded fixtures can coexist, but the model must say which catalog it wants."""
+    model_sql = tmp_path / "col_model.sql"
+    model_sql.write_text("CREATE MATERIALIZED VIEW m AS\nSELECT id FROM sales.orders;")
+    case = {
+        "name": "ambiguous_read",
+        "model": str(model_sql),
+        "given": [
+            {"table": "cat_a.sales.orders", "rows": [{"id": "1"}]},
+            {"table": "cat_b.sales.orders", "rows": [{"id": "2"}]},
+        ],
+        "expect": {"rows": [{"id": "1"}]},
+    }
+
+    with pytest.raises(ValueError, match="'sales.orders'.*is ambiguous"):
+        spec_runner.run_case(spark, case)
+
+
+def test_run_case_unions_two_catalogs(spark, tmp_path: Path) -> None:
+    """Fixtures differing only by catalog are folded apart so a UNION can read both."""
+    model_sql = tmp_path / "union_model.sql"
+    model_sql.write_text(
+        "CREATE OR REFRESH MATERIALIZED VIEW ${silver_schema}.union_model AS\n"
+        "SELECT id, 'a' AS src FROM cat_a.sales.orders\n"
+        "UNION ALL\n"
+        "SELECT id, 'b' AS src FROM cat_b.sales.orders;"
+    )
+    case = {
+        "name": "cross_catalog_union",
+        "silver_schema": "u_silver",
+        "model": str(model_sql),
+        "given": [
+            {"table": "cat_a.sales.orders", "rows": [{"id": "a1"}, {"id": "a2"}]},
+            {"table": "cat_b.sales.orders", "rows": [{"id": "b1"}]},
+        ],
+        "expect": {
+            "rows": [
+                {"id": "a1", "src": "a"},
+                {"id": "a2", "src": "a"},
+                {"id": "b1", "src": "b"},
+            ]
+        },
+    }
+
+    result = spec_runner.run_case(spark, case)
+
+    assert (result.left_minus_right, result.right_minus_left) == (0, 0)
+
+
+def test_run_case_joins_two_catalogs(spark, tmp_path: Path) -> None:
+    """The same table name in two catalogs can be joined against itself."""
+    model_sql = tmp_path / "join_model.sql"
+    model_sql.write_text(
+        "CREATE MATERIALIZED VIEW m AS\n"
+        "SELECT a.id AS id, b.id AS other\n"
+        "FROM cat_a.sales.orders a\n"
+        "JOIN cat_b.sales.orders b ON a.id = b.id;"
+    )
+    case = {
+        "name": "cross_catalog_join",
+        "model": str(model_sql),
+        "given": [
+            {"table": "cat_a.sales.orders", "rows": [{"id": "1"}, {"id": "2"}]},
+            {"table": "cat_b.sales.orders", "rows": [{"id": "2"}]},
+        ],
+        "expect": {"rows": [{"id": "2", "other": "2"}]},
+    }
+
+    result = spec_runner.run_case(spark, case)
+
+    assert (result.left_minus_right, result.right_minus_left) == (0, 0)
+
+
+def test_run_case_python_model_reads_two_catalogs(spark, tmp_path: Path) -> None:
+    """Folding applies to spark.read.table() and spark.sql() in Python models too."""
+    model_py = tmp_path / "py_union_model.py"
+    model_py.write_text(
+        "from pyspark.sql import SparkSession, functions as F\n"
+        "\n"
+        "spark = SparkSession.getActiveSession() or SparkSession.builder.getOrCreate()\n"
+        "\n"
+        "def py_union_model():\n"
+        "    a = spark.read.table('cat_a.sales.orders').withColumn('src', F.lit('a'))\n"
+        "    b = spark.sql(\"SELECT id, 'b' AS src FROM cat_b.sales.orders\")\n"
+        "    return a.unionByName(b)\n"
+    )
+    case = {
+        "name": "python_cross_catalog",
+        "model": str(model_py),
+        "given": [
+            {"table": "cat_a.sales.orders", "rows": [{"id": "a1"}]},
+            {"table": "cat_b.sales.orders", "rows": [{"id": "b1"}]},
+        ],
+        "expect": {"rows": [{"id": "a1", "src": "a"}, {"id": "b1", "src": "b"}]},
+    }
+
+    result = spec_runner.run_case(spark, case)
+
+    assert (result.left_minus_right, result.right_minus_left) == (0, 0)
+
+
+def test_run_case_rejects_collision_when_one_fixture_has_no_catalog(spark, tmp_path: Path) -> None:
+    """Nothing to fold, so the two fixtures cannot be told apart."""
+    model_sql = tmp_path / "nc_model.sql"
+    model_sql.write_text("CREATE MATERIALIZED VIEW m AS\nSELECT id FROM sales.orders;")
+    case = {
+        "name": "unfoldable_collision",
+        "model": str(model_sql),
+        "given": [
+            {"table": "cat_a.sales.orders", "rows": [{"id": "1"}]},
+            {"table": "sales.orders", "rows": [{"id": "2"}]},
+        ],
+        "expect": {"rows": [{"id": "1"}]},
+    }
+
+    with pytest.raises(ValueError, match="names no catalog"):
+        spec_runner.run_case(spark, case)
+
+
+def test_run_case_python_model_with_three_part_names(spark, tmp_path: Path) -> None:
+    """A Python model may read the catalog from conf and use it in both read paths."""
+    model_py = tmp_path / "py_tp_model.py"
+    model_py.write_text(
+        "from pyspark.sql import SparkSession, functions as F\n"
+        "\n"
+        "spark = SparkSession.getActiveSession() or SparkSession.builder.getOrCreate()\n"
+        "CATALOG = spark.conf.get('catalog')\n"
+        "BRONZE = spark.conf.get('bronze_schema')\n"
+        "\n"
+        "def py_tp_model():\n"
+        "    via_reader = spark.read.table(f'{CATALOG}.{BRONZE}.raw_input')\n"
+        "    via_sql = spark.sql(f'SELECT id FROM {CATALOG}.{BRONZE}.raw_input')\n"
+        "    assert via_reader.count() == via_sql.count()\n"
+        "    return via_reader.select(F.col('id').cast('string').alias('id'))\n"
+    )
+    case = {
+        "name": "python_three_part",
+        "catalog": "pytp_cat",
+        "bronze_schema": "pytp_bronze",
+        "model": str(model_py),
+        "given": [{"table": "pytp_cat.pytp_bronze.raw_input", "rows": [{"id": "1"}, {"id": "2"}]}],
+        "expect": {"rows": [{"id": "1"}, {"id": "2"}]},
+    }
+
+    result = spec_runner.run_case(spark, case)
+
+    assert (result.left_minus_right, result.right_minus_left) == (0, 0)
+
+
+def test_table_reader_patches_are_restored_after_model(spark, tmp_path: Path) -> None:
+    """The table readers must be restored after Python model execution."""
+    from pyspark.sql import SparkSession
+    from pyspark.sql.readwriter import DataFrameReader
+
+    original_reader_table = DataFrameReader.table
+    original_session_table = SparkSession.table
+
+    model = tmp_path / "restore_model.py"
+    model.write_text(
+        "from pyspark.sql import SparkSession\n"
+        "\n"
+        "def restore_model():\n"
+        "    spark = SparkSession.builder.getOrCreate()\n"
+        "    return spark.createDataFrame([{'x': 1}])\n"
+    )
+    spec_runner._run_python_model(model, {})
+
+    assert DataFrameReader.table is original_reader_table
+    assert SparkSession.table is original_session_table
+
+
+def test_model_runtime_conf_does_not_leak_between_cases(spark) -> None:
+    """A case without a catalog must not observe the previous case's value."""
+    spec_runner._set_model_runtime_conf(spark, {"catalog": "leak_cat", "bronze_schema": "leak_bronze"})
+    assert spark.conf.get("catalog") == "leak_cat"
+
+    spec_runner._set_model_runtime_conf(spark, {"bronze_schema": "other_bronze"})
+
+    assert spark.conf.get("catalog", None) is None
+    assert spark.conf.get("bronze_schema") == "other_bronze"

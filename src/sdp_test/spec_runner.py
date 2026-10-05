@@ -15,6 +15,16 @@ import uuid
 import yaml
 
 from .bundle import load_bundle_context, load_pipeline_test_spec, resolve_template
+from .identifiers import (
+    _FOLD_SEPARATOR,
+    build_identifier_map,
+    catalog_of,
+    local_name_for,
+    local_schema_name,
+    local_table_name,
+    rewrite_table_references,
+    schema_of,
+)
 from .model_sql import register_df_as_view, render_model_query
 from .spec_models import PipelineEntrySpec, UnitSpec
 
@@ -289,21 +299,28 @@ def _create_df_with_fallback_schema(spark, rows: list[dict[str, Any]], column_ty
 
 def run_case(spark, case: dict[str, Any]) -> CaseResult:
     schema_names: set[str] = set()
-    # Collect schemas from well-known keys (backward compatibility).
+    # Collect schemas from well-known keys (backward compatibility).  The value
+    # may itself carry a catalog (e.g. ``main.bronze``), so normalise it.
     for key in ("bronze_schema", "silver_schema", "gold_schema"):
-        if key in case:
-            schema_names.add(case[key])
+        if case.get(key):
+            schema = local_schema_name(case[key])
+            if schema:
+                schema_names.add(schema)
     # Also collect schemas referenced in the given inputs so they are cleared
     # even when the pipeline uses custom configuration key names.
-    for input_spec in case.get("given") or []:
-        table = input_spec.get("table", "")
-        if "." in table:
-            schema_names.add(table.split(".", 1)[0])
+    given = case.get("given") or []
+    # The local session catalog accepts a single namespace part, so each fixture
+    # is registered under a one-part namespace: normally the schema alone, or
+    # ``<catalog>__<schema>`` when two fixtures would otherwise collide.
+    identifier_map = build_identifier_map(input_spec.get("table", "") for input_spec in given)
+    for table, local in identifier_map.items():
+        schema = schema_of(local) if "." in local else schema_of(table)
+        if schema:
+            schema_names.add(schema)
     _clear_schemas(spark, schema_names)
 
     test_name = case.get("name", "unnamed")
     logger.debug("Running test case: %s", test_name)
-    given = case.get("given") or []
     expect_rows = (case.get("expect") or {}).get("rows") or []
     registered_tables: set[str] = set()
 
@@ -311,17 +328,17 @@ def run_case(spark, case: dict[str, Any]) -> CaseResult:
         table = input_spec["table"]
         rows = input_spec.get("rows") or []
         column_types = input_spec.get("schema") or {}
-        if "." not in table:
+        local_table = local_name_for(table, identifier_map)
+        if "." not in local_table:
             # Non-schema-qualified table: register as a temporary view so the
             # model can read it with just the table name.
             if not rows:
-                spark.sql(f"CREATE OR REPLACE TEMP VIEW {table} AS SELECT CAST(NULL AS STRING) AS _placeholder")
+                spark.sql(f"CREATE OR REPLACE TEMP VIEW {local_table} AS SELECT CAST(NULL AS STRING) AS _placeholder")
             else:
                 df = _create_df_with_fallback_schema(spark, rows, column_types)
-                df.createOrReplaceTempView(table)
-            registered_tables.add(table)
+                df.createOrReplaceTempView(local_table)
         else:
-            schema_name, table_name = table.split(".", 1)
+            schema_name, table_name = local_table.split(".", 1)
             if not rows:
                 # Spark cannot infer schema from an empty list.  Create a stub table
                 # so SQL JOINs can reference it; the auto-missing-columns logic will
@@ -332,15 +349,21 @@ def run_case(spark, case: dict[str, Any]) -> CaseResult:
             else:
                 df = _create_df_with_fallback_schema(spark, rows, column_types)
                 register_df_as_view(spark, df, schema_name, table_name)
-            registered_tables.add(f"{schema_name}.{table_name}")
+        registered_tables.add(local_table)
 
     model_path = _model_path(case)
     logger.debug("Executing model: %s", model_path)
     _set_model_runtime_conf(spark, case)
     if model_path.suffix.lower() == ".py":
-        result_df = _run_python_model(model_path, case)
+        result_df = _run_python_model(model_path, case, identifier_map)
     else:
-        query = render_model_query(str(model_path), _schema_map_from_case(case))
+        query = render_model_query(
+            str(model_path),
+            _schema_map_from_case(case),
+            catalogs=_catalog_names_from_case(case),
+            mapping=identifier_map,
+        )
+        _check_folded_tables_are_qualified(query, identifier_map)
         result_df = _run_query_with_auto_missing_columns(spark, query, registered_tables)
 
     if not expect_rows:
@@ -377,6 +400,53 @@ def run_case(spark, case: dict[str, Any]) -> CaseResult:
         actual_rows=actual_rows,
         expected_rows=expected_rows_log,
     )
+
+
+def _check_folded_tables_are_qualified(query: str, identifier_map: dict[str, str]) -> None:
+    """Fail clearly when a model reads a folded table without naming its catalog.
+
+    Once two fixtures have been folded apart there is no bare ``sales.orders``
+    any more, so a model asking for it cannot be served.  Without this check
+    Spark reports ``TABLE_OR_VIEW_NOT_FOUND``, which gives no hint that a
+    catalog collision is the cause.
+    """
+    folded = {
+        declared: local for declared, local in identifier_map.items() if _FOLD_SEPARATOR in local.split(".", 1)[0]
+    }
+    for declared in sorted(folded):
+        stripped = local_table_name(declared)
+        pattern = re.compile(rf"(?<![\w`.]){re.escape(stripped)}(?![\w`])", flags=re.IGNORECASE)
+        if pattern.search(query):
+            candidates = sorted(d for d in folded if local_table_name(d) == stripped)
+            raise ValueError(
+                f"Model reads {stripped!r}, but that name is ambiguous: fixtures {candidates} "
+                "differ only by catalog and were registered separately. "
+                "Qualify the reference in the model with its catalog."
+            )
+
+
+def _catalog_names_from_case(case: dict[str, Any]) -> set[str]:
+    """Collect every catalog name referenced by a case.
+
+    Used to strip catalog prefixes in positions that cannot be recognised from
+    SQL syntax alone (e.g. a four-part ``catalog.schema.table.column``).
+    """
+    catalogs: set[str] = set()
+    case_catalog = case.get("catalog")
+    if isinstance(case_catalog, str) and case_catalog:
+        catalogs.add(case_catalog)
+    for input_spec in case.get("given") or []:
+        table = input_spec.get("table", "")
+        if table:
+            catalog = catalog_of(table)
+            if catalog:
+                catalogs.add(catalog)
+    # A configured schema may itself be catalog-qualified, e.g. "main.bronze".
+    for key in ("bronze_schema", "silver_schema", "gold_schema"):
+        value = case.get(key)
+        if isinstance(value, str) and "." in value:
+            catalogs.add(value.split(".", 1)[0].strip("`"))
+    return catalogs
 
 
 def _load_pipeline_defaults(
@@ -642,6 +712,10 @@ def _coerce_expected_rows(expect_rows: list[dict[str, Any]], schema):
 def _clear_schemas(spark, schema_names: set[str]) -> None:
     import shutil
 
+    # Defensive: a caller may pass a catalog-qualified value, which Spark
+    # cannot parse as a database name.
+    schema_names = {s for s in (local_schema_name(name) for name in schema_names if name) if s}
+
     for schema in sorted(schema_names):
         spark.sql(f"DROP DATABASE IF EXISTS {schema} CASCADE")
 
@@ -679,7 +753,6 @@ def _schema_map_from_case(case: dict[str, Any]) -> dict[str, str]:
             "__pipeline_spec_dir",
             "pipeline_name",
             "pipeline_schema",
-            "catalog",
         }
     )
     return {k: str(v) for k, v in case.items() if isinstance(v, str) and k not in _skip_keys}
@@ -700,10 +773,20 @@ def _model_path(case: dict[str, Any]) -> Path:
     return (Path.cwd() / model).resolve()
 
 
+_RUNTIME_CONF_KEYS = ("catalog", "bronze_schema", "silver_schema", "gold_schema", "source_base_path")
+
+
 def _set_model_runtime_conf(spark, case: dict[str, Any]) -> None:
-    for key in ("bronze_schema", "silver_schema", "gold_schema", "source_base_path"):
+    # The Spark session is shared across cases, so keys this case does not
+    # define must be cleared or the model would read the previous case's value.
+    for key in _RUNTIME_CONF_KEYS:
         if case.get(key):
             spark.conf.set(key, case[key])
+        else:
+            try:
+                spark.conf.unset(key)
+            except Exception:  # noqa: BLE001 – unset of a never-set key
+                pass
     for key, value in (case.get("spark_conf") or {}).items():
         spark.conf.set(key, value)
 
@@ -729,23 +812,28 @@ def _patch_readstream():
     return _restore
 
 
-def _patch_qualify_sql():
-    """Monkey-patch ``SparkSession.sql`` to rewrite QUALIFY clauses for local testing.
+def _patch_model_sql(catalogs: set[str] | None = None, identifier_map: dict[str, str] | None = None):
+    """Monkey-patch ``SparkSession.sql`` to make Databricks SQL run locally.
 
-    Open-source PySpark does not support the QUALIFY clause (a Databricks SQL
-    extension).  This patch applies the same ``_rewrite_qualify`` transpilation
-    used for ``.sql`` model files so that Python models calling ``spark.sql()``
-    with QUALIFY also work locally.
+    Applies the same two rewrites used for ``.sql`` model files, so Python
+    models calling ``spark.sql()`` behave identically:
+
+    * table references are resolved to their local names — the session catalog
+      accepts a single namespace part, and collided fixtures were folded;
+    * ``QUALIFY`` (a Databricks extension) is transpiled away.
 
     Returns a callable that restores the original method.
     """
     from pyspark.sql import SparkSession
     from .model_sql import _rewrite_qualify
 
+    catalogs = catalogs or set()
     original_sql = SparkSession.sql
 
     def _patched_sql(self, sqlQuery, *args, **kwargs):
-        return original_sql(self, _rewrite_qualify(sqlQuery), *args, **kwargs)
+        if isinstance(sqlQuery, str):
+            sqlQuery = _rewrite_qualify(rewrite_table_references(sqlQuery, identifier_map, catalogs))
+        return original_sql(self, sqlQuery, *args, **kwargs)
 
     SparkSession.sql = _patched_sql  # ty: ignore[invalid-assignment]
 
@@ -755,7 +843,40 @@ def _patch_qualify_sql():
     return _restore
 
 
-def _run_python_model(model_path: Path, case: dict[str, Any]):
+def _patch_table_readers(identifier_map: dict[str, str] | None = None):
+    """Monkey-patch the table readers to resolve names for the local catalog.
+
+    Python models read their inputs with ``spark.read.table(...)`` or
+    ``spark.table(...)``, often building the name from configuration that
+    includes a catalog.  ``local_name_for`` is idempotent, so the
+    ``SparkSession.table`` → ``DataFrameReader.table`` delegation resolving
+    twice is harmless.
+
+    Returns a callable that restores the original methods.
+    """
+    from pyspark.sql import SparkSession
+    from pyspark.sql.readwriter import DataFrameReader
+
+    original_reader_table = DataFrameReader.table
+    original_session_table = SparkSession.table
+
+    def _patched_reader_table(self, tableName, *args, **kwargs):
+        return original_reader_table(self, local_name_for(tableName, identifier_map), *args, **kwargs)
+
+    def _patched_session_table(self, tableName, *args, **kwargs):
+        return original_session_table(self, local_name_for(tableName, identifier_map), *args, **kwargs)
+
+    DataFrameReader.table = _patched_reader_table  # ty: ignore[invalid-assignment]
+    SparkSession.table = _patched_session_table  # ty: ignore[invalid-assignment]
+
+    def _restore():
+        DataFrameReader.table = original_reader_table
+        SparkSession.table = original_session_table
+
+    return _restore
+
+
+def _run_python_model(model_path: Path, case: dict[str, Any], identifier_map: dict[str, str] | None = None):
     module_name = f"_sdp_model_{model_path.stem}_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, str(model_path))
     if spec is None or spec.loader is None:
@@ -794,9 +915,11 @@ def _run_python_model(model_path: Path, case: dict[str, Any]):
     # Redirect spark.readStream to spark.read so streaming models can run
     # locally as batch queries (mirrors STREAM() stripping for SQL models).
     restore_readstream = _patch_readstream()
-    # Rewrite QUALIFY clauses in spark.sql() calls, mirroring the transpilation
-    # already applied to .sql model files.
-    restore_qualify_sql = _patch_qualify_sql()
+    # Strip catalogs and rewrite QUALIFY in spark.sql() calls, mirroring the
+    # rewrites already applied to .sql model files.
+    restore_model_sql = _patch_model_sql(_catalog_names_from_case(case), identifier_map)
+    # Resolve catalogs in spark.read.table() / spark.table() reads.
+    restore_table_readers = _patch_table_readers(identifier_map)
     try:
         spec.loader.exec_module(module)
 
@@ -809,7 +932,8 @@ def _run_python_model(model_path: Path, case: dict[str, Any]):
 
         return model_callable()
     finally:
-        restore_qualify_sql()
+        restore_table_readers()
+        restore_model_sql()
         restore_readstream()
         if saved_pipelines_module is not None:  # pragma: no cover – Databricks runtime only
             sys.modules["pyspark.pipelines"] = saved_pipelines_module

@@ -1134,3 +1134,201 @@ class TestOpenSourceSDP:
 
         result = run_case(spark, py_case[0])
         assert result.left_minus_right == 0 and result.right_minus_left == 0
+
+
+def _create_catalog_project(tmp_path: Path) -> Path:
+    """Scaffold a project whose fixtures and models use three-part identifiers."""
+
+    (tmp_path / "databricks.yml").write_text(
+        """
+bundle:
+  name: catalog_integration_test
+
+variables:
+  catalog:
+    default: cat_it
+
+include:
+  - "resources/*.yml"
+"""
+    )
+
+    resources = tmp_path / "resources"
+    resources.mkdir()
+
+    (resources / "pipeline.yml").write_text(
+        """
+resources:
+  pipelines:
+    shop:
+      name: shop
+      catalog: ${var.catalog}
+      schema: cit_gold
+      configuration:
+        bronze_schema: cit_bronze
+        silver_schema: cit_silver
+      libraries:
+        - glob:
+            include: ../src/shop/transformations/**
+"""
+    )
+
+    # SQL model: reads a catalog-qualified source.
+    sql_dir = tmp_path / "src" / "shop" / "transformations" / "silver"
+    sql_dir.mkdir(parents=True)
+
+    (sql_dir / "stg_products.sql").write_text(
+        """
+CREATE OR REFRESH MATERIALIZED VIEW ${catalog}.${silver_schema}.stg_products
+(
+    product_id STRING,
+    product_name STRING
+)
+AS
+SELECT
+    CAST(id AS STRING) AS product_id,
+    name AS product_name
+FROM ${catalog}.${bronze_schema}.raw_products;
+"""
+    )
+
+    (sql_dir / "stg_products.unit_tests.yml").write_text(
+        """
+tests:
+  - name: maps_product_fields_with_catalog
+    model: stg_products.sql
+    given:
+      - table: ${catalog}.${bronze_schema}.raw_products
+        rows:
+          - id: "1"
+            name: Widget
+    expect:
+      rows:
+        - product_id: "1"
+          product_name: Widget
+
+  - name: two_part_fixture_feeds_three_part_model
+    model: stg_products.sql
+    given:
+      - table: ${bronze_schema}.raw_products
+        rows:
+          - id: "2"
+            name: Gadget
+    expect:
+      rows:
+        - product_id: "2"
+          product_name: Gadget
+"""
+    )
+
+    # Python model: builds a catalog-qualified name from runtime conf.
+    py_dir = tmp_path / "src" / "shop" / "transformations" / "gold"
+    py_dir.mkdir(parents=True)
+
+    (py_dir / "product_summary.py").write_text(
+        """
+from pyspark.sql import SparkSession, functions as F
+
+spark = SparkSession.getActiveSession() or SparkSession.builder.getOrCreate()
+CATALOG = spark.conf.get("catalog")
+SILVER_SCHEMA = spark.conf.get("silver_schema")
+
+def product_summary():
+    return (
+        spark.read.table(f"{CATALOG}.{SILVER_SCHEMA}.stg_products")
+        .groupBy("product_name")
+        .agg(F.count("*").alias("count"))
+    )
+"""
+    )
+
+    (py_dir / "product_summary.unit_tests.yml").write_text(
+        """
+tests:
+  - name: aggregates_products_with_catalog
+    model: product_summary.py
+    given:
+      - table: ${catalog}.${silver_schema}.stg_products
+        rows:
+          - product_id: "1"
+            product_name: Widget
+          - product_id: "2"
+            product_name: Widget
+    expect:
+      rows:
+        - product_name: Widget
+          count: 2
+"""
+    )
+
+    pipeline_tests = tmp_path / "pipeline_tests"
+    pipeline_tests.mkdir()
+
+    (pipeline_tests / "shop_pipeline_tests.yml").write_text(
+        """
+suite: shop_pipeline_tests
+
+bundle:
+  file: ../databricks.yml
+
+pipeline: pipelines.shop
+"""
+    )
+
+    return tmp_path
+
+
+class TestThreePartIdentifiers:
+    """End-to-end: a project whose fixtures and models name a catalog."""
+
+    def test_catalog_resolves_into_case_defaults(self, tmp_path: Path) -> None:
+        project = _create_catalog_project(tmp_path)
+        cases = all_cases(project / "pipeline_tests", project / "databricks.yml")
+
+        assert cases, "expected the catalog project to yield cases"
+        assert all(case["catalog"] == "cat_it" for _, case, _ in cases)
+
+    def test_fixture_tables_are_catalog_qualified(self, tmp_path: Path) -> None:
+        project = _create_catalog_project(tmp_path)
+        cases = all_cases(project / "pipeline_tests", project / "databricks.yml")
+
+        tables = {g["table"] for _, case, _ in cases for g in case.get("given") or []}
+        assert "cat_it.cit_bronze.raw_products" in tables
+        assert "cat_it.cit_silver.stg_products" in tables
+
+    def test_sql_model_with_three_part_names_passes(self, spark, tmp_path: Path) -> None:
+        project = _create_catalog_project(tmp_path)
+        cases = all_cases(project / "pipeline_tests", project / "databricks.yml")
+
+        selected = [c for f, c, _ in cases if c["name"] == "maps_product_fields_with_catalog"]
+        assert len(selected) == 1
+
+        result = run_case(spark, selected[0])
+        assert (result.left_minus_right, result.right_minus_left) == (0, 0)
+
+    def test_two_part_fixture_feeds_three_part_model(self, spark, tmp_path: Path) -> None:
+        project = _create_catalog_project(tmp_path)
+        cases = all_cases(project / "pipeline_tests", project / "databricks.yml")
+
+        selected = [c for f, c, _ in cases if c["name"] == "two_part_fixture_feeds_three_part_model"]
+        assert len(selected) == 1
+
+        result = run_case(spark, selected[0])
+        assert (result.left_minus_right, result.right_minus_left) == (0, 0)
+
+    def test_python_model_with_three_part_names_passes(self, spark, tmp_path: Path) -> None:
+        project = _create_catalog_project(tmp_path)
+        cases = all_cases(project / "pipeline_tests", project / "databricks.yml")
+
+        selected = [c for f, c, _ in cases if c["name"] == "aggregates_products_with_catalog"]
+        assert len(selected) == 1
+
+        result = run_case(spark, selected[0])
+        assert (result.left_minus_right, result.right_minus_left) == (0, 0)
+
+    def test_case_ids_are_formatted(self, tmp_path: Path) -> None:
+        project = _create_catalog_project(tmp_path)
+        cases = all_cases(project / "pipeline_tests", project / "databricks.yml")
+
+        ids = {case_id(f, c) for f, c, _ in cases}
+        assert any("maps_product_fields_with_catalog" in i for i in ids)
